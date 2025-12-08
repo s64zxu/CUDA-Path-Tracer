@@ -15,6 +15,13 @@ enum GeomType
     DISK
 };
 
+enum MaterialType
+{
+    MicrofacetPBR,
+    IDEAL_DIFFUSE,
+    IDEAL_SPECULAR
+};
+
 struct Geom
 {
     enum GeomType type;
@@ -52,6 +59,7 @@ struct Material
     float Metallic;  
     float Roughness; 
     float emittance; // if it's a light soure
+    MaterialType Type;
 };
 
 struct Camera

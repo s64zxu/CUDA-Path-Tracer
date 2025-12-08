@@ -74,6 +74,16 @@ void Scene::loadFromJSON(const std::string& jsonName)
         newMaterial.Metallic = p.value("Metallic", 0.0f);
         newMaterial.Roughness = p.value("Roughness", 0.5f);
         newMaterial.emittance = p.value("emittance", 0.0f);
+        std::string typeStr = p.value("Type", "MicrofacetPBR");
+        if (typeStr == "MicrofacetPBR") {
+            newMaterial.Type = MicrofacetPBR;
+        }
+        else if (typeStr == "IDEAL_SPECULAR") {
+            newMaterial.Type = IDEAL_SPECULAR;
+        }
+        else {
+            newMaterial.Type = MicrofacetPBR;
+        }
 
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);

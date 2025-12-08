@@ -1,168 +1,156 @@
 {
   "Materials": {
-    "wall_white": {
-      "BaseColor": [ 0.8, 0.8, 0.8 ],
+    "mat_white_diffuse": {
+      "TYPE": "IDEAL_DIFFUSE",
+      "BaseColor": [ 0.85, 0.85, 0.85 ],
       "Metallic": 0.0,
       "Roughness": 1.0,
       "emittance": 0.0
     },
-    "wall_dark_grey": {
-      "BaseColor": [ 0.2, 0.2, 0.2 ],
+    "mat_red_diffuse": {
+      "TYPE": "IDEAL_DIFFUSE",
+      "BaseColor": [ 0.8, 0.1, 0.1 ],
       "Metallic": 0.0,
       "Roughness": 1.0,
       "emittance": 0.0
     },
-    "floor_checker": {
-      "BaseColor": [ 0.5, 0.5, 0.55 ],
-      "Metallic": 0.0,
-      "Roughness": 0.6,
-      "emittance": 0.0
-    },
-    "light_ceiling_disk": {
-      "BaseColor": [ 1.0, 0.95, 0.9 ],
-      "Metallic": 0.0,
-      "Roughness": 1.0,
-      "emittance": 12.0
-    },
-    "light_neon_blue": {
-      "BaseColor": [ 0.1, 0.4, 1.0 ],
-      "Metallic": 0.0,
-      "Roughness": 1.0,
-      "emittance": 20.0
-    },
-    "mirror_perfect": {
-      "BaseColor": [ 0.98, 0.98, 0.98 ],
+    "mat_mirror": {
+      "TYPE": "IDEAL_SPECULAR",
+      "BaseColor": [ 1.0, 1.0, 1.0 ],
       "Metallic": 1.0,
       "Roughness": 0.0,
       "emittance": 0.0
     },
-    "gold_rough": {
-      "BaseColor": [ 1.0, 0.71, 0.29 ],
+    "mat_gold_pbr": {
+      "TYPE": "MicrofacetPBR",
+      "BaseColor": [ 1.0, 0.76, 0.33 ],
       "Metallic": 1.0,
-      "Roughness": 0.25,
+      "Roughness": 0.2,
       "emittance": 0.0
     },
-    "glossy_red": {
-      "BaseColor": [ 0.8, 0.1, 0.1 ],
+    "mat_plastic_blue_pbr": {
+      "TYPE": "MicrofacetPBR",
+      "BaseColor": [ 0.1, 0.1, 0.9 ],
       "Metallic": 0.0,
       "Roughness": 0.05,
       "emittance": 0.0
+    },
+    "mat_floor_pbr": {
+      "TYPE": "MicrofacetPBR",
+      "BaseColor": [ 0.3, 0.3, 0.35 ],
+      "Metallic": 0.0,
+      "Roughness": 0.1,
+      "emittance": 0.0
+    },
+    "mat_light_warm": {
+      "TYPE": "IDEAL_DIFFUSE",
+      "BaseColor": [ 1.0, 0.9, 0.8 ],
+      "Metallic": 0.0,
+      "Roughness": 1.0,
+      "emittance": 15.0
+    },
+    "mat_light_cool": {
+      "TYPE": "IDEAL_DIFFUSE",
+      "BaseColor": [ 0.8, 0.9, 1.0 ],
+      "Metallic": 0.0,
+      "Roughness": 1.0,
+      "emittance": 8.0
     }
   },
   "Camera": {
-    "RES": [ 800, 800 ],
-    "FOVY": 45.0,
-    "ITERATIONS": 5000,
+    "RES": [ 800, 600 ],
+    "FOVY": 40.0,
+    "ITERATIONS": 2000,
     "DEPTH": 8,
-    "FILE": "gallery_enclosed",
-    "EYE": [ 0.0, 6.0, 12.0 ],
-    "LOOKAT": [ 0.0, 5.0, 0.0 ],
+    "FILE": "material_gallery",
+    "EYE": [ 0.0, 5.0, 15.0 ],
+    "LOOKAT": [ 0.0, 2.5, 0.0 ],
     "UP": [ 0.0, 1.0, 0.0 ]
   },
   "Objects": [
     {
-      "COMMENT": "=== ROOM ENCLOSURE (30x30x12) ===",
+      "COMMENT": "=== ROOM SHELL ===",
       "TYPE": "plane",
-      "MATERIAL": "floor_checker",
+      "MATERIAL": "mat_white_diffuse",
       "TRANS": [ 0.0, 0.0, 0.0 ],
       "ROTAT": [ -90.0, 0.0, 0.0 ],
-      "SCALE": [ 30.0, 30.0, 1.0 ]
+      "SCALE": [ 20.0, 20.0, 1.0 ]
     },
     {
-      "COMMENT": "Ceiling",
       "TYPE": "plane",
-      "MATERIAL": "wall_white",
-      "TRANS": [ 0.0, 12.0, 0.0 ],
+      "MATERIAL": "mat_white_diffuse",
+      "TRANS": [ 0.0, 10.0, 0.0 ],
       "ROTAT": [ 90.0, 0.0, 0.0 ],
-      "SCALE": [ 30.0, 30.0, 1.0 ]
+      "SCALE": [ 20.0, 20.0, 1.0 ]
     },
     {
-      "COMMENT": "Back Wall (Far away)",
       "TYPE": "plane",
-      "MATERIAL": "wall_white",
-      "TRANS": [ 0.0, 6.0, -15.0 ],
+      "MATERIAL": "mat_white_diffuse",
+      "TRANS": [ 0.0, 5.0, -10.0 ],
       "ROTAT": [ 0.0, 0.0, 0.0 ],
-      "SCALE": [ 30.0, 12.0, 1.0 ]
+      "SCALE": [ 20.0, 10.0, 1.0 ]
     },
     {
-      "COMMENT": "Front Wall (Behind Camera - Important for enclosed feel)",
       "TYPE": "plane",
-      "MATERIAL": "wall_white",
-      "TRANS": [ 0.0, 6.0, 15.0 ],
-      "ROTAT": [ 0.0, 180.0, 0.0 ],
-      "SCALE": [ 30.0, 12.0, 1.0 ]
-    },
-    {
-      "COMMENT": "Left Wall",
-      "TYPE": "plane",
-      "MATERIAL": "wall_dark_grey",
-      "TRANS": [ -15.0, 6.0, 0.0 ],
+      "MATERIAL": "mat_red_diffuse",
+      "TRANS": [ -10.0, 5.0, 0.0 ],
       "ROTAT": [ 0.0, 90.0, 0.0 ],
-      "SCALE": [ 30.0, 12.0, 1.0 ]
+      "SCALE": [ 20.0, 10.0, 1.0 ]
     },
     {
-      "COMMENT": "Right Wall",
       "TYPE": "plane",
-      "MATERIAL": "wall_white",
-      "TRANS": [ 15.0, 6.0, 0.0 ],
+      "MATERIAL": "mat_white_diffuse",
+      "TRANS": [ 10.0, 5.0, 0.0 ],
       "ROTAT": [ 0.0, -90.0, 0.0 ],
-      "SCALE": [ 30.0, 12.0, 1.0 ]
+      "SCALE": [ 20.0, 10.0, 1.0 ]
     },
     {
-      "COMMENT": "=== LIGHTING ===",
+      "COMMENT": "=== LIGHTS ===",
       "TYPE": "disk",
-      "MATERIAL": "light_ceiling_disk",
-      "TRANS": [ 0.0, 11.9, 0.0 ],
+      "MATERIAL": "mat_light_warm",
+      "TRANS": [ 0.0, 9.9, 0.0 ],
       "ROTAT": [ 90.0, 0.0, 0.0 ],
-      "SCALE": [ 8.0, 8.0, 1.0 ]
+      "SCALE": [ 5.0, 5.0, 1.0 ]
     },
     {
-      "COMMENT": "Neon Rod (Cube Light) on Left Wall",
+      "COMMENT": "Hidden Back Light for Rim Lighting",
       "TYPE": "cube",
-      "MATERIAL": "light_neon_blue",
-      "TRANS": [ -14.9, 6.0, 0.0 ],
+      "MATERIAL": "mat_light_cool",
+      "TRANS": [ 0.0, 1.0, -9.0 ],
       "ROTAT": [ 0.0, 0.0, 0.0 ],
-      "SCALE": [ 0.2, 8.0, 0.2 ]
+      "SCALE": [ 10.0, 2.0, 0.5 ]
     },
     {
-      "COMMENT": "=== OBJECTS ===",
+      "COMMENT": "=== OBJECTS: LEFT - PERFECT MIRROR ===",
       "TYPE": "cube",
-      "MATERIAL": "wall_white",
-      "TRANS": [ 0.0, 1.5, 0.0 ],
+      "MATERIAL": "mat_mirror",
+      "TRANS": [ -5.0, 2.5, 0.0 ],
+      "ROTAT": [ 0.0, 20.0, 0.0 ],
+      "SCALE": [ 4.0, 5.0, 4.0 ]
+    },
+    {
+      "COMMENT": "=== OBJECTS: CENTER - PBR GOLD ===",
+      "TYPE": "sphere",
+      "MATERIAL": "mat_gold_pbr",
+      "TRANS": [ 0.0, 2.5, 3.0 ],
+      "ROTAT": [ 0.0, 0.0, 0.0 ],
+      "SCALE": [ 2.5, 2.5, 2.5 ]
+    },
+    {
+      "COMMENT": "=== OBJECTS: RIGHT - PBR PLASTIC ===",
+      "TYPE": "cube",
+      "MATERIAL": "mat_plastic_blue_pbr",
+      "TRANS": [ 5.0, 2.5, 0.0 ],
+      "ROTAT": [ 0.0, -20.0, 0.0 ],
+      "SCALE": [ 4.0, 5.0, 4.0 ]
+    },
+    {
+      "COMMENT": "=== OBJECTS: FLOOR DETAIL - DIFFUSE CUBE ===",
+      "TYPE": "cube",
+      "MATERIAL": "mat_white_diffuse",
+      "TRANS": [ 2.0, 0.75, 6.0 ],
       "ROTAT": [ 0.0, 45.0, 0.0 ],
-      "SCALE": [ 4.0, 3.0, 4.0 ]
-    },
-    {
-      "COMMENT": "Center Gold Sphere",
-      "TYPE": "sphere",
-      "MATERIAL": "gold_rough",
-      "TRANS": [ 0.0, 5.0, 0.0 ],
-      "ROTAT": [ 0.0, 0.0, 0.0 ],
-      "SCALE": [ 4.0, 4.0, 4.0 ]
-    },
-    {
-      "COMMENT": "Mirror Monolith (Left Back)",
-      "TYPE": "cube",
-      "MATERIAL": "mirror_perfect",
-      "TRANS": [ -8.0, 5.0, -8.0 ],
-      "ROTAT": [ 0.0, 30.0, 0.0 ],
-      "SCALE": [ 3.0, 10.0, 3.0 ]
-    },
-    {
-      "COMMENT": "Glossy Red Sphere (Right Front)",
-      "TYPE": "sphere",
-      "MATERIAL": "glossy_red",
-      "TRANS": [ 8.0, 2.0, 5.0 ],
-      "ROTAT": [ 0.0, 0.0, 0.0 ],
-      "SCALE": [ 4.0, 4.0, 4.0 ]
-    },
-    {
-      "COMMENT": "Wall Decor Disk (Back Wall)",
-      "TYPE": "disk",
-      "MATERIAL": "mirror_perfect",
-      "TRANS": [ 8.0, 7.0, -14.9 ],
-      "ROTAT": [ 0.0, 0.0, 0.0 ],
-      "SCALE": [ 3.0, 3.0, 1.0 ]
+      "SCALE": [ 1.5, 1.5, 1.5 ]
     }
   ]
 }

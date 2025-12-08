@@ -16,7 +16,6 @@
 #include "interactions.h"
 
 #define ERRORCHECK 1
-#define RRDEPTH 5
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -339,7 +338,7 @@ __device__ bool isOccluded(const Ray& r, float maxDist, Geom* geoms, int geomsSi
 
 
         // 如果有交点，且在光源距离之内 (减去 epsilon 防止自交/交到光源背面)
-        if (t > 0.001f && t < maxDist - 0.001f) {
+        if (t > EPSILON && t < maxDist - EPSILON) {
             return true;
         }
     }
@@ -398,28 +397,30 @@ __global__ void shadeMaterial(
     if (material.emittance > 0.0f) {
         float misWeight = 1.0f;
 
-        // 如果开启 MIS 并且不是第一帧直接看见 (第一帧没有 NEE 竞争)
+        // 如果开启 MIS 并且不是第一帧 (第一帧没有 NEE 竞争，直接采纳)
         if (depth > 0 && *num_lights > 0) {
-            float distToLight = intersection.t;
-            float cosLight = glm::max(glm::dot(N, wo), 0.0f); // 光源面的法线 N 和 入射光线 wo 的夹角
-            
-            // 读取光源面积
-            float lightArea = geoms[intersection.hitGeomId].surfaceArea;
+            // 检查上一次弹射是否是镜面反射 (Specular)
+            // 镜面反射是 Delta 分布，无法通过 NEE 采样到，所以必须完全信任 BSDF 采样 (MIS Weight = 1.0)
+            // 这里约定：如果 lastPdf 非常大 (1e10)，说明上一跳是 Delta 分布
+            bool prevWasSpecular = (pathSegments[idx].lastPdf > (PDF_DIRAC_DELTA *0.9f));
 
-            if (cosLight > EPSILON) {
-                // 计算: 假如上一步做 NEE，选中这个点的概率 (转为立体角)
-                float numLightsVal = (float)(*num_lights);
-                float pdfLightArea = 1.0f / (numLightsVal * lightArea);
-                float pdfLightSolidAngle = pdfLightArea * (distToLight * distToLight) / cosLight;
+            if (!prevWasSpecular) {
+                float distToLight = intersection.t;
+                float cosLight = glm::max(glm::dot(N, wo), 0.0f);
+                float lightArea = geoms[intersection.hitGeomId].surfaceArea;
 
-                // 获取上一步 BSDF 采样时的 PDF
-                float pdfBsdf = pathSegments[idx].lastPdf;
+                if (cosLight > EPSILON) {
+                    // 将 Area PDF 转换为 Solid Angle PDF
+                    float numLightsVal = (float)(*num_lights);
+                    float pdfLightArea = 1.0f / (numLightsVal * lightArea);
+                    float pdfLightSolidAngle = pdfLightArea * (distToLight * distToLight) / cosLight;
 
-                // MIS Weight
-                misWeight = powerHeuristic(pdfBsdf, pdfLightSolidAngle);
-            }
-            else {
-                misWeight = 0.0f; // 击中光源背面
+                    float pdfBsdf = pathSegments[idx].lastPdf;
+                    misWeight = powerHeuristic(pdfBsdf, pdfLightSolidAngle);
+                }
+                else {
+                    misWeight = 0.0f; // 击中光源背面
+                }
             }
         }
 
@@ -429,87 +430,114 @@ __global__ void shadeMaterial(
     }
 
     // Case 2: Explicit Light Sampling (Next Event Estimation)
-    if (*num_lights > 0) {
+    // if the material type is ideal reflection, don't execute NEE
+    // 只有非镜面材质才进行 NEE (Delta 分布无法进行 NEE)
+    if (*num_lights > 0 && material.Type != IDEAL_SPECULAR &&
+        (material.Type != MicrofacetPBR || material.Roughness > 0.05f))
+    {
         glm::vec3 lightSamplePos;
         glm::vec3 lightN;
         float pdfLightArea;
         int lightIdx;
 
-        // 1. 采样光源 
+        // A. 采样光源
         SampleLight(lights, *num_lights, rng, lightSamplePos, lightN, pdfLightArea, lightIdx);
 
         glm::vec3 wi = glm::normalize(lightSamplePos - intersectPoint);
         float dist = glm::distance(lightSamplePos, intersectPoint);
-        float cosThetaSurf = glm::max(glm::dot(N, wi), 0.0f);
 
-        // 2. 计算光源表面的 Cosine
+        float cosThetaSurf = glm::max(glm::dot(N, wi), 0.0f);
         float cosThetaLight = glm::max(glm::dot(lightN, -wi), 0.0f);
 
-        // 3. 检查有效性
+        // B. 检查几何有效性
         if (cosThetaSurf > 0.0f && cosThetaLight > 0.0f && pdfLightArea > 0.0f) {
             Ray shadowRay;
             shadowRay.origin = intersectPoint + N * EPSILON;
             shadowRay.direction = wi;
 
+            // C. 阴影射线检测
             if (!isOccluded(shadowRay, dist - 0.002f, geoms, geoms_size)) {
                 Material lightMat = materials[lights[lightIdx].materialid];
                 glm::vec3 Le = lightMat.BaseColor * lightMat.emittance;
 
-                glm::vec3 f = evalBSDF(wo, wi, N, material);
-                float pdfBsdf = pdfBSDF(wo, wi, N, material);
+                glm::vec3 f(0.0f);
+                float pdf = 0.0f;
 
-                // Area PDF 转换为 Solid Angle PDF 才能与 BSDF PDF (Solid Angle) 进行比较
-                // PDF_solidAngle = PDF_area * (dist^2 / cosThetaLight)
-                float pdfLightSolidAngle = pdfLightArea * (dist * dist) / cosThetaLight;
+                // D. 根据材质类型计算 f (BRDF) 和 BSDF PDF
+                if (material.Type == MicrofacetPBR) {
+                    f = evalPBR(wo, wi, N, material);
+                    pdf = pdfPBR(wo, wi, N, material);
+                }
+                else if (material.Type == IDEAL_DIFFUSE) {
+                    f = evalDiffuse(material, N, wi);
+                    pdf = pdfDiffuse(wi, N);
+                }
+                // IDEAL_SPECULAR 不需要处理，因为外面 if 已经排除了
 
-                float weight = powerHeuristic(pdfLightSolidAngle, pdfBsdf);
+                if (glm::length(f) > 0.0f) {
+                    // PDF 转换: Area -> Solid Angle
+                    float pdfLightSolidAngle = pdfLightArea * (dist * dist) / cosThetaLight;
 
-                // --- 最终光照计算 (Area Measure 公式) ---
-                // Lo = Le * f * G / PDF_area
-                // G = (cosSurf * cosLight) / dist^2
-                float G = (cosThetaSurf * cosThetaLight) / (dist * dist);
+                    // E. 计算 MIS 权重
+                    float weight = powerHeuristic(pdfLightSolidAngle, pdf);
 
-                // 公式：(Le * f * G * weight) / pdfLightArea
-                pathSegments[idx].accumDirectColor += pathSegments[idx].color * Le * f * G * weight / pdfLightArea;
+                    // --- 最终光照计算 (Area Measure 公式) ---
+                    // Lo = Le * f * G / PDF_area
+                    // G = (cosSurf * cosLight) / dist^2
+                    float G = (cosThetaSurf * cosThetaLight) / (dist * dist);
+
+                    pathSegments[idx].accumDirectColor += pathSegments[idx].color * Le * f * G * weight / pdfLightArea;
+                }
             }
         }
     }
 
     // Case 3: BSDF Sampling (Scatter / Indirect)
     glm::vec3 nextDir;
-    float nextPdf;
-    // sampleBSDF 内部会根据概率选择 Diffuse 或 Specular，并返回混合后的 BSDF 和 PDF
-    glm::vec3 bsdfVal = sampleBSDF(wo, nextDir, nextPdf, N, material, rng);
+    float nextPdf = 0.0f;
+    glm::vec3 throughput(0.0f);
 
-    if (nextPdf > 0.0f && glm::length(bsdfVal) > 0.0f) {
-        float cosTheta = glm::abs(glm::dot(N, nextDir));
+    // 1. 根据材质类型调用采样函数
+    if (material.Type == MicrofacetPBR) {
+        // samplePBR 返回 (fr * cos / pdf)
+        throughput = samplePBR(wo, nextDir, nextPdf, N, material, rng);
+    }
+    else if (material.Type == IDEAL_DIFFUSE) {
+        // sampleDiffuse 返回 (fr * cos / pdf) = (albedo/PI * cos) / (cos/PI) = albedo
+        throughput = sampleDiffuse(wo, nextDir, nextPdf, N, material, rng);
+    }
+    else if (material.Type == IDEAL_SPECULAR) {
+        // sampleSpecular_Delta 返回 (Fr / cos) * cos / 1.0 = Fr
+        // 注意：Delta 分布的 PDF 实际上是无穷大。
+        throughput = sampleSpecular(wo, nextDir, nextPdf, N, material);
+    }
 
-        // 更新 Throughput
-        // Throughput = Throughput * f * cos / pdf
-        pathSegments[idx].color *= (bsdfVal * cosTheta) / nextPdf;
-
-        // 更新 Ray
-        pathSegments[idx].ray.origin = intersectPoint + N * 0.001f; // Offset
+    // 2. 更新 Path Segment
+    if (nextPdf > 0.0f && glm::length(throughput) > 0.0f) {
+        pathSegments[idx].color *= throughput; // 累乘吞吐量
+        pathSegments[idx].ray.origin = intersectPoint + N * EPSILON; // 避免自遮挡
         pathSegments[idx].ray.direction = nextDir;
         pathSegments[idx].remainingBounces--;
+        pathSegments[idx].lastPdf = nextPdf; // 存入 PDF 供下一跳使用
 
-        // 存储 PDF 供下一跳 MIS 使用
-        pathSegments[idx].lastPdf = nextPdf;
-
-        // 俄罗斯轮盘赌
+        // 3. 俄罗斯轮盘赌 (Russian Roulette)
         if (depth > RRDEPTH) {
             float r_rr = u01(rng);
             float maxChan = glm::max(pathSegments[idx].color.r, glm::max(pathSegments[idx].color.g, pathSegments[idx].color.b));
+
+            maxChan = glm::clamp(maxChan, 0.0f, 1.0f); // 确保概率在 [0,1]
+
             if (r_rr < maxChan) {
-                pathSegments[idx].color /= maxChan;
+                pathSegments[idx].color /= maxChan; // 概率补偿
             }
             else {
-                pathSegments[idx].remainingBounces = -1;
+                pathSegments[idx].remainingBounces = -1; // 终止路径
             }
         }
     }
     else {
-        pathSegments[idx].remainingBounces = -1; // 吸收或采样无效
+        // 采样失败或被吸收
+        pathSegments[idx].remainingBounces = -1;
     }
 }
 
