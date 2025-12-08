@@ -15,7 +15,7 @@
 #define EPSILON           0.00001f
 #define INV_PI 0.31830988618f
 #define PDF_DIRAC_DELTA 1e10f
-#define RRDEPTH 5
+#define RRDEPTH 3
 
 class GuiDataContainer
 {

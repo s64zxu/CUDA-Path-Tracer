@@ -2,6 +2,11 @@
 
 #include <vector>
 #include "scene.h"
+#include <thrust/sort.h>
+#include <thrust/device_ptr.h>
+#include <thrust/iterator/zip_iterator.h>
+#include <thrust/tuple.h>
+
 
 void InitDataContainer(GuiDataContainer* guiData);
 void pathtraceInit(Scene *scene);

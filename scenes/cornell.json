@@ -61,7 +61,7 @@
     "RES": [ 800, 600 ],
     "FOVY": 40.0,
     "ITERATIONS": 2000,
-    "DEPTH": 8,
+    "DEPTH": 5,
     "FILE": "material_gallery",
     "EYE": [ 0.0, 5.0, 15.0 ],
     "LOOKAT": [ 0.0, 2.5, 0.0 ],

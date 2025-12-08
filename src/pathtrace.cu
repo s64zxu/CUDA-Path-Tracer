@@ -82,6 +82,7 @@ static ShadeableIntersection* dev_intersections = NULL;
 // TODO: static variables for device memory, any extra info you need, etc
 static Geom* dev_light_sources = NULL; // Light source sample
 static int* dev_num_lights = NULL;
+static int* dev_material_ids = NULL; // used for materials sorting
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
@@ -126,6 +127,9 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&dev_num_lights, sizeof(int));
     cudaMemcpy(dev_num_lights, &num_lights, sizeof(int), cudaMemcpyHostToDevice);
 
+    cudaMalloc(&dev_material_ids, pixelcount * sizeof(int));
+    cudaMemset(dev_material_ids, 0, pixelcount * sizeof(int));
+
     // TODO: initialize any extra device memeory you need
     checkCUDAError("pathtraceInit");
 }
@@ -140,6 +144,7 @@ void pathtraceFree()
     // TODO: clean up any extra device memory you created
     cudaFree(dev_light_sources);
     cudaFree(dev_num_lights);
+    cudaFree(dev_material_ids);
     checkCUDAError("pathtraceFree");
 }
 
@@ -345,23 +350,12 @@ __device__ bool isOccluded(const Ray& r, float maxDist, Geom* geoms, int geomsSi
     return false;
 }
 
-
 __device__ float powerHeuristic(float f, float g) {
     float f2 = f * f;
     float g2 = g * g;
     return f2 / (f2 + g2 + 1e-5f);
 }
 
-
-// LOOK: "fake" shader demonstrating what you might do with the info in
-// a ShadeableIntersection, as well as how to use thrust's random number
-// generator. Observe that since the thrust random number generator basically
-// adds "noise" to the iteration, the image should start off noisy and get
-// cleaner as more iterations are computed.
-//
-// Note that this shader does NOT do a BSDF evaluation!
-// Your shaders should handle that - this can allow techniques such as
-// bump mapping.
 __global__ void shadeMaterial(
     int iter,
     int depth,
@@ -541,6 +535,35 @@ __global__ void shadeMaterial(
     }
 }
 
+__global__ void kernSetMaterialIds(
+    int num_paths,
+    const ShadeableIntersection* dev_intersections,
+    int* dev_materialIds)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < num_paths)
+        dev_materialIds[idx] = dev_intersections[idx].materialId;
+}
+
+void SortingByMaterials(
+    int num_paths, 
+    int* dev_materialIds, 
+    ShadeableIntersection* dev_intersections, 
+    PathSegment* dev_paths)
+{
+    // set materials id
+    int blockSize = 128;
+    dim3 numBlocks = (num_paths + blockSize - 1) / blockSize;
+    kernSetMaterialIds << <numBlocks, blockSize >> > (num_paths, dev_intersections, dev_materialIds);
+
+    // device_pointer_cast -> convert pointer to Device Pointer Iterator
+    auto value_zip = thrust::make_zip_iterator(thrust::make_tuple(thrust::device_pointer_cast(dev_intersections), thrust::device_pointer_cast(dev_paths)));
+    
+    auto dev_materialIdskeys = thrust::device_pointer_cast(dev_materialIds);
+
+    thrust::sort_by_key(dev_materialIdskeys, dev_materialIdskeys + num_paths, value_zip);
+}
+
 struct IsPathInactive {
     __device__ bool operator()(const PathSegment& path) const {
         return path.remainingBounces < 0;
@@ -643,6 +666,12 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
 
+        // material sorting
+        if (depth > 0) {
+            SortingByMaterials(num_paths, dev_material_ids, dev_intersections, dev_paths);
+        }
+
+        // shading
         shadeMaterial << <numblocks, blockSize1d >> > (
             iter,
             depth,
@@ -670,6 +699,9 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_paths + num_paths,
             IsPathInactive()
         );
+
+        // ÔÚ remove_if Ö®ºó
+        // printf("Depth: %d, Paths: %d\n", depth, num_paths);
 
         // remaining number of rays
         num_paths = new_dev_path_end - dev_paths;
