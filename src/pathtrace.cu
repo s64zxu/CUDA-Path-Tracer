@@ -14,8 +14,13 @@
 #include "utilities.h"
 #include "intersections.h"
 #include "interactions.h"
+#include <nvtx3/nvToolsExt.h>
 
-#define ERRORCHECK 1
+
+#define ERRORCHECK 0
+#define FIRSTBOUCNCACHE 1
+#define MATERIALSSORTING 0
+#define RAYSCOMPACTION 1
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -84,6 +89,9 @@ static Geom* dev_light_sources = NULL; // Light source sample
 static int* dev_num_lights = NULL;
 static int* dev_material_ids = NULL; // used for materials sorting
 
+static PathSegment* dev_paths_first_bounce = NULL; // 缓存第一跳的射线（包含 Origin, Direction, Color=White）
+static ShadeableIntersection* dev_intersections_first_bounce = NULL; // 缓存第一跳的求交结果
+
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
     guiData = imGuiData;
@@ -109,6 +117,9 @@ void pathtraceInit(Scene* scene)
 
     cudaMalloc(&dev_intersections, pixelcount * sizeof(ShadeableIntersection));
     cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
+
+    cudaMalloc(&dev_paths_first_bounce, pixelcount * sizeof(PathSegment));
+    cudaMalloc(&dev_intersections_first_bounce, pixelcount * sizeof(ShadeableIntersection));
 
     vector<Geom> lightSouces;
     for (auto& i : scene->geoms)
@@ -145,6 +156,8 @@ void pathtraceFree()
     cudaFree(dev_light_sources);
     cudaFree(dev_num_lights);
     cudaFree(dev_material_ids);
+    cudaFree(dev_paths_first_bounce);
+    cudaFree(dev_intersections_first_bounce);
     checkCUDAError("pathtraceFree");
 }
 
@@ -177,7 +190,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
 
         segment.pixelIndex = index;
         segment.remainingBounces = traceDepth;
-        segment.accumDirectColor = glm::vec3(0.0f);
+        //segment.accumDirectColor = glm::vec3(0.0f);
         segment.lastPdf = 0.0f;
     }
 }
@@ -284,9 +297,9 @@ __device__ void SampleLight(
     int num_lights,
     thrust::default_random_engine& rng,
     glm::vec3& samplePoint,
-    glm::vec3& sampleNormal, 
-    float& pdf_omega, 
-    int &light_idx)
+    glm::vec3& sampleNormal,
+    float& pdf_area,
+    int& light_idx)
 {
     thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
     int light_index = (int)(u01(rng) * num_lights);
@@ -295,7 +308,7 @@ __device__ void SampleLight(
     float pdf_geom = 0.0f;
 
     // 根据几何体类型采样 
-    if(selected_light.type == PLANE)
+    if (selected_light.type == PLANE)
     {
         glm::vec2 r_sample;
         r_sample.x = u01(rng);
@@ -317,10 +330,10 @@ __device__ void SampleLight(
         sampleSphere(selected_light, r_sample, samplePoint, sampleNormal, pdf_geom);
     }
 
-    pdf_omega = pdf_selection * pdf_geom;
+    pdf_area = pdf_selection * pdf_geom;
     light_idx = light_index;
 }
-    
+
 __device__ bool isOccluded(const Ray& r, float maxDist, Geom* geoms, int geomsSize) {
     glm::vec3 tmp_int, tmp_norm;
     bool outside = true;
@@ -362,11 +375,13 @@ __global__ void shadeMaterial(
     int num_paths,
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
+    glm::vec3* image,
     Material* materials,
     Geom* lights,
     int* num_lights,
     Geom* geoms,
-    int geoms_size)
+    int geoms_size
+)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_paths || pathSegments[idx].remainingBounces < 0) return;
@@ -385,7 +400,7 @@ __global__ void shadeMaterial(
     Material material = materials[intersection.materialId];
     glm::vec3 intersectPoint = pathSegments[idx].ray.origin + pathSegments[idx].ray.direction * intersection.t;
     glm::vec3 N = intersection.surfaceNormal;
-    glm::vec3 wo = -pathSegments[idx].ray.direction; 
+    glm::vec3 wo = -pathSegments[idx].ray.direction;
 
     // Case 1: Implicit Light Sampling (BSDF 偶然击中光源)
     if (material.emittance > 0.0f) {
@@ -396,7 +411,7 @@ __global__ void shadeMaterial(
             // 检查上一次弹射是否是镜面反射 (Specular)
             // 镜面反射是 Delta 分布，无法通过 NEE 采样到，所以必须完全信任 BSDF 采样 (MIS Weight = 1.0)
             // 这里约定：如果 lastPdf 非常大 (1e10)，说明上一跳是 Delta 分布
-            bool prevWasSpecular = (pathSegments[idx].lastPdf > (PDF_DIRAC_DELTA *0.9f));
+            bool prevWasSpecular = (pathSegments[idx].lastPdf > (PDF_DIRAC_DELTA * 0.9f));
 
             if (!prevWasSpecular) {
                 float distToLight = intersection.t;
@@ -418,8 +433,10 @@ __global__ void shadeMaterial(
             }
         }
 
-        pathSegments[idx].accumDirectColor += pathSegments[idx].color * material.BaseColor * material.emittance * misWeight;
+        //pathSegments[idx].accumDirectColor += pathSegments[idx].color * material.BaseColor * material.emittance * misWeight;
+        image[pathSegments[idx].pixelIndex] += pathSegments[idx].color * material.BaseColor * material.emittance * misWeight;
         pathSegments[idx].remainingBounces = -1;
+
         return;
     }
 
@@ -480,7 +497,8 @@ __global__ void shadeMaterial(
                     // G = (cosSurf * cosLight) / dist^2
                     float G = (cosThetaSurf * cosThetaLight) / (dist * dist);
 
-                    pathSegments[idx].accumDirectColor += pathSegments[idx].color * Le * f * G * weight / pdfLightArea;
+                    /*pathSegments[idx].accumDirectColor += pathSegments[idx].color * Le * f * G * weight / pdfLightArea;*/
+                    image[pathSegments[idx].pixelIndex] += pathSegments[idx].color * Le * f * G * weight / pdfLightArea;
                 }
             }
         }
@@ -546,9 +564,9 @@ __global__ void kernSetMaterialIds(
 }
 
 void SortingByMaterials(
-    int num_paths, 
-    int* dev_materialIds, 
-    ShadeableIntersection* dev_intersections, 
+    int num_paths,
+    int* dev_materialIds,
+    ShadeableIntersection* dev_intersections,
     PathSegment* dev_paths)
 {
     // set materials id
@@ -558,7 +576,7 @@ void SortingByMaterials(
 
     // device_pointer_cast -> convert pointer to Device Pointer Iterator
     auto value_zip = thrust::make_zip_iterator(thrust::make_tuple(thrust::device_pointer_cast(dev_intersections), thrust::device_pointer_cast(dev_paths)));
-    
+
     auto dev_materialIdskeys = thrust::device_pointer_cast(dev_materialIds);
 
     thrust::sort_by_key(dev_materialIdskeys, dev_materialIdskeys + num_paths, value_zip);
@@ -570,22 +588,7 @@ struct IsPathInactive {
     }
 };
 
-// Add the current iteration's output to the overall image
-__global__ void finalGather(int activePaths, glm::vec3* image, PathSegment* iterationPaths)
-{
-    int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-    if (index < activePaths)
-    {
-        PathSegment& iterationPath = iterationPaths[index];
-
-        // 始终累加本轮计算的 Direct Lighting (NEE)
-        image[iterationPath.pixelIndex] += iterationPath.accumDirectColor;
-
-        // 重置 accumDirectColor，防止下一轮 bounce 重复累加
-        iterationPath.accumDirectColor = glm::vec3(0.0f);
-    }
-}
 
 /**
  * Wrapper for the __global__ call that sets up the kernel calls and does a ton
@@ -637,8 +640,10 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
     // TODO: perform one iteration of path tracing
 
+#if FIRSTBOUCNCACHE == 0
     generateRayFromCamera << <blocksPerGrid2d, blockSize2d >> > (cam, iter, traceDepth, dev_paths);
     checkCUDAError("generate camera ray");
+#endif 
 
     int depth = 0;
     PathSegment* dev_path_end = dev_paths + pixelcount;
@@ -652,24 +657,55 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     {
         // clean shading chunks
         cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
-
         // tracing
         dim3 numblocks = (num_paths + blockSize1d - 1) / blockSize1d;
-        computeIntersections << <numblocks, blockSize1d >> > (
-            depth,
-            num_paths,
-            dev_paths,
-            dev_geoms,
-            hst_scene->geoms.size(),
-            dev_intersections
-            );
-        checkCUDAError("trace one bounce");
-        cudaDeviceSynchronize();
+#if FIRSTBOUCNCACHE == 1 
+        if (depth == 0) // 只有在 depth == 0 时才考虑缓存
+        {
+            if (iter == 1)
+            {
+                generateRayFromCamera << <blocksPerGrid2d, blockSize2d >> > (cam, iter, traceDepth, dev_paths);
+                checkCUDAError("generate camera ray");
+                computeIntersections << <numblocks, blockSize1d >> > (
+                    depth, num_paths, dev_paths, dev_geoms, hst_scene->geoms.size(), dev_intersections);
+                checkCUDAError("trace first bounce");
+                cudaDeviceSynchronize();
 
-        // material sorting
+                // 备份数据到缓存 Buffer
+                cudaMemcpy(dev_paths_first_bounce, dev_paths, pixelcount * sizeof(PathSegment), cudaMemcpyDeviceToDevice);
+                cudaMemcpy(dev_intersections_first_bounce, dev_intersections, pixelcount * sizeof(ShadeableIntersection), cudaMemcpyDeviceToDevice);
+            }
+            // 后续帧，直接读取缓存
+            else
+            {
+                cudaMemcpy(dev_paths, dev_paths_first_bounce, pixelcount * sizeof(PathSegment), cudaMemcpyDeviceToDevice);
+                cudaMemcpy(dev_intersections, dev_intersections_first_bounce, pixelcount * sizeof(ShadeableIntersection), cudaMemcpyDeviceToDevice);
+            }
+        }
+        else
+        {
+            computeIntersections << <numblocks, blockSize1d >> > (
+                depth, num_paths, dev_paths, dev_geoms, hst_scene->geoms.size(), dev_intersections);
+            checkCUDAError("trace subsequent bounces");
+            cudaDeviceSynchronize();
+        }
+        cudaDeviceSynchronize();
+#endif // FIRSTBOUCNCACHE
+#if FIRSTBOUCNCACHE == 0
+        computeIntersections << <numblocks, blockSize1d >> > (
+            depth, num_paths, dev_paths, dev_geoms, hst_scene->geoms.size(), dev_intersections);
+#endif // !FIRSTBOUCNCACHE
+
+
+#if MATERIALSSORTING
         if (depth > 0) {
             SortingByMaterials(num_paths, dev_material_ids, dev_intersections, dev_paths);
         }
+#endif 
+
+        //nvtxRangePushA("Material Sorting");
+        //SortingByMaterials(num_paths, dev_material_ids, dev_intersections, dev_paths);
+        //nvtxRangePop();
 
         // shading
         shadeMaterial << <numblocks, blockSize1d >> > (
@@ -678,6 +714,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             num_paths,
             dev_intersections,
             dev_paths,
+            dev_image,
             dev_materials,
             dev_light_sources,
             dev_num_lights,
@@ -687,42 +724,40 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         checkCUDAError("shade materials");
         cudaDeviceSynchronize();
 
-        // gather the color before paths are compacted 
-        dim3 numBlocksActive = (num_paths + blockSize1d - 1) / blockSize1d;
-        finalGather << <numBlocksActive, blockSize1d >> > (num_paths, dev_image, dev_paths);
-
-        // use Stream Compaction to remove invalid rays
-        // avoid thread divergency
+        // 合并光线
+        // use Stream Compaction to remove invalid rays to avoid thread divergency
+#ifdef RAYSCOMPACTION
+        nvtxRangePushA("Stream Compaction");
         PathSegment* new_dev_path_end = thrust::remove_if(
             thrust::device,
             dev_paths,
             dev_paths + num_paths,
             IsPathInactive()
         );
-
+        nvtxRangePop();
+#endif // RAYSCOMPACTION
         // 在 remove_if 之后
         // printf("Depth: %d, Paths: %d\n", depth, num_paths);
 
-        // remaining number of rays
         num_paths = new_dev_path_end - dev_paths;
 
+        depth++;
         if (num_paths == 0 || depth >= traceDepth) {
             iterationComplete = true;
         }
-
         if (guiData != NULL)
         {
             guiData->TracedDepth = depth;
         }
-        depth++;
     }
 
     // Send results to OpenGL buffer for rendering
     sendImageToPBO << <blocksPerGrid2d, blockSize2d >> > (pbo, cam.resolution, iter, dev_image);
 
     // Retrieve image from GPU
-    cudaMemcpy(hst_scene->state.image.data(), dev_image,
-        pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    // 只在保存图片时有用，测试性能时不要开启
+    /*cudaMemcpy(hst_scene->state.image.data(), dev_image,
+        pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);*/
 
     checkCUDAError("pathtrace");
 }

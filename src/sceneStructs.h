@@ -49,7 +49,6 @@ struct PathSegment
     int pixelIndex;
     int remainingBounces;
     float lastPdf;
-    glm::vec3 accumDirectColor;
 };
 
 
