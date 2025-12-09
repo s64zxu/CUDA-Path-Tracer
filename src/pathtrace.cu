@@ -24,6 +24,7 @@
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
+#define c_geoms ((const Geom*)c_geoms_storage)
 void checkCUDAErrorFn(const char* msg, const char* file, int line)
 {
 #if ERRORCHECK
@@ -80,7 +81,6 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm
 static Scene* hst_scene = NULL;
 static GuiDataContainer* guiData = NULL;
 static glm::vec3* dev_image = NULL;
-static Geom* dev_geoms = NULL;
 static Material* dev_materials = NULL;
 static PathSegment* dev_paths = NULL;
 static ShadeableIntersection* dev_intersections = NULL;
@@ -88,9 +88,12 @@ static ShadeableIntersection* dev_intersections = NULL;
 static Geom* dev_light_sources = NULL; // Light source sample
 static int* dev_num_lights = NULL;
 static int* dev_material_ids = NULL; // used for materials sorting
-
 static PathSegment* dev_paths_first_bounce = NULL; // 缓存第一跳的射线（包含 Origin, Direction, Color=White）
 static ShadeableIntersection* dev_intersections_first_bounce = NULL; // 缓存第一跳的求交结果
+
+// 1. 使用 unsigned char 数组代替 Geom 数组，骗过编译器
+// 2. 必须加上 __align__(16)，因为 Geom 里有 mat4，GPU 读取需要 16 字节对齐
+__constant__ __align__(16) unsigned char c_geoms_storage[MAX_GEOMS * sizeof(Geom)];
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
@@ -109,8 +112,7 @@ void pathtraceInit(Scene* scene)
 
     cudaMalloc(&dev_paths, pixelcount * sizeof(PathSegment));
 
-    cudaMalloc(&dev_geoms, scene->geoms.size() * sizeof(Geom));
-    cudaMemcpy(dev_geoms, scene->geoms.data(), scene->geoms.size() * sizeof(Geom), cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(c_geoms_storage, scene->geoms.data(), scene->geoms.size() * sizeof(Geom));
 
     cudaMalloc(&dev_materials, scene->materials.size() * sizeof(Material));
     cudaMemcpy(dev_materials, scene->materials.data(), scene->materials.size() * sizeof(Material), cudaMemcpyHostToDevice);
@@ -149,7 +151,6 @@ void pathtraceFree()
 {
     cudaFree(dev_image);  // no-op if dev_image is null
     cudaFree(dev_paths);
-    cudaFree(dev_geoms);
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
     // TODO: clean up any extra device memory you created
@@ -203,7 +204,6 @@ __global__ void computeIntersections(
     int depth,
     int num_paths,
     PathSegment* pathSegments,
-    Geom* geoms,
     int geoms_size,
     ShadeableIntersection* intersections)
 {
@@ -227,7 +227,7 @@ __global__ void computeIntersections(
         // traverse all the geoms and check if intersect
         for (int i = 0; i < geoms_size; i++)
         {
-            Geom& geom = geoms[i];
+            const Geom& geom = c_geoms[i];
 
             if (geom.type == CUBE)
             {
@@ -267,7 +267,7 @@ __global__ void computeIntersections(
         {
             // The ray hits something
             intersections[path_index].t = t_min;
-            intersections[path_index].materialId = geoms[hit_geom_index].materialid;
+            intersections[path_index].materialId = c_geoms[hit_geom_index].materialid;
             intersections[path_index].surfaceNormal = normal;
             intersections[path_index].hitGeomId = hit_geom_index;
         }
@@ -334,24 +334,24 @@ __device__ void SampleLight(
     light_idx = light_index;
 }
 
-__device__ bool isOccluded(const Ray& r, float maxDist, Geom* geoms, int geomsSize) {
+__device__ bool isOccluded(const Ray& r, float maxDist, int geomsSize) {
     glm::vec3 tmp_int, tmp_norm;
     bool outside = true;
     for (int i = 0; i < geomsSize; i++) {
         float t = -1.0f;
-        if (geoms[i].type == CUBE) {
-            t = boxIntersectionTest(geoms[i], r, tmp_int, tmp_norm, outside);
+        if (c_geoms[i].type == CUBE) {
+            t = boxIntersectionTest(c_geoms[i], r, tmp_int, tmp_norm, outside);
         }
-        else if (geoms[i].type == SPHERE) {
-            t = sphereIntersectionTest(geoms[i], r, tmp_int, tmp_norm, outside);
+        else if (c_geoms[i].type == SPHERE) {
+            t = sphereIntersectionTest(c_geoms[i], r, tmp_int, tmp_norm, outside);
         }
-        else if (geoms[i].type == DISK)
+        else if (c_geoms[i].type == DISK)
         {
-            t = diskIntersectionTest(geoms[i], r, tmp_int, tmp_norm, outside);
+            t = diskIntersectionTest(c_geoms[i], r, tmp_int, tmp_norm, outside);
         }
-        else if (geoms[i].type == PLANE)
+        else if (c_geoms[i].type == PLANE)
         {
-            t = planeIntersectionTest(geoms[i], r, tmp_int, tmp_norm, outside);;
+            t = planeIntersectionTest(c_geoms[i], r, tmp_int, tmp_norm, outside);;
         }
 
 
@@ -379,7 +379,6 @@ __global__ void shadeMaterial(
     Material* materials,
     Geom* lights,
     int* num_lights,
-    Geom* geoms,
     int geoms_size
 )
 {
@@ -416,7 +415,7 @@ __global__ void shadeMaterial(
             if (!prevWasSpecular) {
                 float distToLight = intersection.t;
                 float cosLight = glm::max(glm::dot(N, wo), 0.0f);
-                float lightArea = geoms[intersection.hitGeomId].surfaceArea;
+                float lightArea = c_geoms[intersection.hitGeomId].surfaceArea;
 
                 if (cosLight > EPSILON) {
                     // 将 Area PDF 转换为 Solid Angle PDF
@@ -467,7 +466,7 @@ __global__ void shadeMaterial(
             shadowRay.direction = wi;
 
             // C. 阴影射线检测
-            if (!isOccluded(shadowRay, dist - 0.002f, geoms, geoms_size)) {
+            if (!isOccluded(shadowRay, dist - 0.002f, geoms_size)) {
                 Material lightMat = materials[lights[lightIdx].materialid];
                 glm::vec3 Le = lightMat.BaseColor * lightMat.emittance;
 
@@ -667,7 +666,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
                 generateRayFromCamera << <blocksPerGrid2d, blockSize2d >> > (cam, iter, traceDepth, dev_paths);
                 checkCUDAError("generate camera ray");
                 computeIntersections << <numblocks, blockSize1d >> > (
-                    depth, num_paths, dev_paths, dev_geoms, hst_scene->geoms.size(), dev_intersections);
+                    depth, num_paths, dev_paths, hst_scene->geoms.size(), dev_intersections);
                 checkCUDAError("trace first bounce");
                 cudaDeviceSynchronize();
 
@@ -685,7 +684,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         else
         {
             computeIntersections << <numblocks, blockSize1d >> > (
-                depth, num_paths, dev_paths, dev_geoms, hst_scene->geoms.size(), dev_intersections);
+                depth, num_paths, dev_paths, hst_scene->geoms.size(), dev_intersections);
             checkCUDAError("trace subsequent bounces");
             cudaDeviceSynchronize();
         }
@@ -693,7 +692,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 #endif // FIRSTBOUCNCACHE
 #if FIRSTBOUCNCACHE == 0
         computeIntersections << <numblocks, blockSize1d >> > (
-            depth, num_paths, dev_paths, dev_geoms, hst_scene->geoms.size(), dev_intersections);
+            depth, num_paths, dev_paths, hst_scene->geoms.size(), dev_intersections);
 #endif // !FIRSTBOUCNCACHE
 
 
@@ -718,7 +717,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_materials,
             dev_light_sources,
             dev_num_lights,
-            dev_geoms,
             hst_scene->geoms.size()
             );
         checkCUDAError("shade materials");

@@ -16,6 +16,7 @@
 #define INV_PI 0.31830988618f
 #define PDF_DIRAC_DELTA 1e10f
 #define RRDEPTH 3
+#define MAX_GEOMS 64 // 存储的几何体数量，用于初始化常量内存
 
 class GuiDataContainer
 {
