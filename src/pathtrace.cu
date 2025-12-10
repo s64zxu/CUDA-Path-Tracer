@@ -208,54 +208,40 @@ __global__ void computeIntersections(
     ShadeableIntersection* intersections)
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
-
+    float t_min = FLT_MAX;
     if (path_index < num_paths)
     {
         PathSegment pathSegment = pathSegments[path_index];
-
-        float t;
-        glm::vec3 intersect_point;
-        glm::vec3 normal;
-        float t_min = FLT_MAX;
         int hit_geom_index = -1;
-        bool outside = true;
-
-        glm::vec3 tmp_intersect;
-        glm::vec3 tmp_normal;
-
+        float t;
         // naive parse through global geoms
-        // traverse all the geoms and check if intersect
+        // traverse all the geoms and check if intersect without computing normal and intersection point
+        // Lazy Normal Evaluation
         for (int i = 0; i < geoms_size; i++)
         {
             const Geom& geom = c_geoms[i];
 
             if (geom.type == CUBE)
             {
-                t = boxIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
+                t = cubeIntersectionTest(geom, pathSegment.ray);
             }
             else if (geom.type == SPHERE)
             {
-                t = sphereIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
+                t = sphereIntersectionTest(geom, pathSegment.ray);
             }
             else if (geom.type == DISK)
             {
-                t = diskIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
+                t = diskIntersectionTest(geom, pathSegment.ray);
             }
             else if (geom.type == PLANE)
             {
-                t = planeIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
+                t = planeIntersectionTest(geom, pathSegment.ray);
             }
 
-            // TODO: add more intersection tests here... triangle? metaball? CSG?
-
-            // Compute the minimum t from the intersection tests to determine what
-            // scene geometry object was hit first.
             if (t > 0.0f && t_min > t)
             {
                 t_min = t;
                 hit_geom_index = i;
-                intersect_point = tmp_intersect;
-                normal = tmp_normal;
             }
         }
 
@@ -263,8 +249,26 @@ __global__ void computeIntersections(
         {
             intersections[path_index].t = -1.0f;
         }
-        else
+        else // 为最近的物体计算法线和交点
         {
+            bool outside = true;
+            glm::vec3 normal = glm::vec3(0.0f, 0.0f, 1.0f);
+            if (c_geoms[hit_geom_index].type == CUBE)
+            {
+                normal = cubeGetNormal(c_geoms[hit_geom_index], pathSegment.ray, t_min);
+            }
+            else if (c_geoms[hit_geom_index].type == SPHERE)
+            {
+                normal = sphereGetNormal(c_geoms[hit_geom_index], pathSegment.ray, t_min);
+            }
+            else if (c_geoms[hit_geom_index].type == DISK)
+            {
+                normal = diskGetNormal(c_geoms[hit_geom_index], pathSegment.ray, t_min);
+            }
+            else
+            {
+                normal = planeGetNormal(c_geoms[hit_geom_index], pathSegment.ray, t_min);
+            }
             // The ray hits something
             intersections[path_index].t = t_min;
             intersections[path_index].materialId = c_geoms[hit_geom_index].materialid;
@@ -335,26 +339,22 @@ __device__ void SampleLight(
 }
 
 __device__ bool isOccluded(const Ray& r, float maxDist, int geomsSize) {
-    glm::vec3 tmp_int, tmp_norm;
-    bool outside = true;
     for (int i = 0; i < geomsSize; i++) {
         float t = -1.0f;
         if (c_geoms[i].type == CUBE) {
-            t = boxIntersectionTest(c_geoms[i], r, tmp_int, tmp_norm, outside);
+            t = cubeIntersectionTest(c_geoms[i], r);
         }
         else if (c_geoms[i].type == SPHERE) {
-            t = sphereIntersectionTest(c_geoms[i], r, tmp_int, tmp_norm, outside);
+            t = sphereIntersectionTest(c_geoms[i], r);
         }
         else if (c_geoms[i].type == DISK)
         {
-            t = diskIntersectionTest(c_geoms[i], r, tmp_int, tmp_norm, outside);
+            t = diskIntersectionTest(c_geoms[i], r);
         }
         else if (c_geoms[i].type == PLANE)
         {
-            t = planeIntersectionTest(c_geoms[i], r, tmp_int, tmp_norm, outside);;
+            t = planeIntersectionTest(c_geoms[i], r);;
         }
-
-
         // 如果有交点，且在光源距离之内 (减去 epsilon 防止自交/交到光源背面)
         if (t > EPSILON && t < maxDist - EPSILON) {
             return true;

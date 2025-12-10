@@ -38,52 +38,27 @@ __host__ __device__ inline glm::vec3 multiplyMV(glm::mat4 m, glm::vec4 v)
     return glm::vec3(m * v);
 }
 
-// CHECKITOUT
-/**
- * Test intersection between a ray and a transformed cube. Untransformed,
- * the cube ranges from -0.5 to 0.5 in each axis and is centered at the origin.
- *
- * @param intersectionPoint  Output parameter for point of intersection.
- * @param normal             Output parameter for surface normal.
- * @param outside            Output param for whether the ray came from outside.
- * @return                   Ray parameter `t` value. -1 if no intersection.
- */
-__host__ __device__ float boxIntersectionTest(
-    Geom box,
-    Ray r,
-    glm::vec3& intersectionPoint,
-    glm::vec3& normal,
-    bool& outside);
 
-// CHECKITOUT
-/**
- * Test intersection between a ray and a transformed sphere. Untransformed,
- * the sphere always has radius 0.5 and is centered at the origin.
- *
- * @param intersectionPoint  Output parameter for point of intersection.
- * @param normal             Output parameter for surface normal.
- * @param outside            Output param for whether the ray came from outside.
- * @return                   Ray parameter `t` value. -1 if no intersection.
- */
+// the cube ranges from -0.5 to 0.5 in each axis and is centered at the origin.
+__host__ __device__ float cubeIntersectionTest(
+    Geom box,
+    Ray r);
+// the sphere always has radius 0.5 and is centered at the origin.
 __host__ __device__ float sphereIntersectionTest(
     Geom sphere,
-    Ray r,
-    glm::vec3& intersectionPoint,
-    glm::vec3& normal,
-    bool& outside);
-
-// 中心在原点，半径为 0.5
-__host__ __device__ float diskIntersectionTest(
-    Geom disk,
-    Ray r,
-    glm::vec3& intersectionPoint,
-    glm::vec3& normal,
-    bool& outside);
-
+    Ray r);
 // 中心在原点，范围是从 [-0.5, -0.5] 到 [0.5, 0.5]。
-__host__ __device__ float planeIntersectionTest(
-    Geom plane,
-    Ray r,
-    glm::vec3& intersectionPoint,
-    glm::vec3& normal,
-    bool& outside);
+__device__ float planeIntersectionTest(
+    const Geom& plane,
+    const Ray& r);
+// 中心在原点，半径为 0.5
+__device__ float diskIntersectionTest(
+    const Geom& plane,
+    const Ray& r);
+
+__device__ glm::vec3 cubeGetNormal(const Geom& box, const Ray& worldRay, float worldT);
+__device__ glm::vec3 sphereGetNormal(const Geom& sphere, const Ray& worldRay, float worldT);
+__device__ glm::vec3 planeGetNormal(const Geom& plane, const Ray& worldRay, float worldT);
+__device__ glm::vec3 diskGetNormal(const Geom& disk, const Ray& worldRay, float worldT);
+
+

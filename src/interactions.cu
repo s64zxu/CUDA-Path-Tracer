@@ -250,8 +250,6 @@ __host__ __device__ glm::vec3 sampleSpecular(
     return Fr;
 }
 
-
-
 __host__ __device__ void sampleSphere(
     const Geom& sphere,
     const glm::vec2& r_sample,

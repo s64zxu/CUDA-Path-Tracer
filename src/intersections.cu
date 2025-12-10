@@ -1,226 +1,160 @@
 #include "intersections.h"
 
-__host__ __device__ float boxIntersectionTest(
-    Geom box,
-    Ray r,
-    glm::vec3 &intersectionPoint,
-    glm::vec3 &normal,
-    bool &outside)
+
+
+__host__ __device__ float cubeIntersectionTest(Geom box, Ray r)
 {
     Ray q;
-    q.origin = multiplyMV(box.inverseTransform, glm::vec4(r.origin   , 1.0f));
-    q.direction = glm::normalize(multiplyMV(box.inverseTransform, glm::vec4(r.direction, 0.0f)));
+    q.origin = multiplyMV(box.inverseTransform, glm::vec4(r.origin, 1.0f));
+    q.direction = multiplyMV(box.inverseTransform, glm::vec4(r.direction, 0.0f));
 
-    float tmin = -1e38f;
-    float tmax = 1e38f;
-    glm::vec3 tmin_n;
-    glm::vec3 tmax_n;
-    for (int xyz = 0; xyz < 3; ++xyz)
-    {
-        float qdxyz = q.direction[xyz];
-        /*if (glm::abs(qdxyz) > 0.00001f)*/
-        {
-            float t1 = (-0.5f - q.origin[xyz]) / qdxyz;
-            float t2 = (+0.5f - q.origin[xyz]) / qdxyz;
-            float ta = glm::min(t1, t2);
-            float tb = glm::max(t1, t2);
-            glm::vec3 n;
-            n[xyz] = t2 < t1 ? +1 : -1;
-            if (ta > 0 && ta > tmin)
-            {
-                tmin = ta;
-                tmin_n = n;
-            }
-            if (tb < tmax)
-            {
-                tmax = tb;
-                tmax_n = n;
-            }
-        }
+    float t_min = -1e38f;
+    float t_max = 1e38f;
+    const float box_min = -0.5f;
+    const float box_max = 0.5f;
+
+    // 2. Slab Method
+#pragma unroll
+    for (int i = 0; i < 3; ++i) {
+        float invD = 1.0f / q.direction[i];
+
+        float t0 = (box_min - q.origin[i]) * invD;
+        float t1 = (box_max - q.origin[i]) * invD;
+
+        float t_near = fminf(t0, t1);
+        float t_far = fmaxf(t0, t1);
+
+        t_min = fmaxf(t_near, t_min);
+        t_max = fminf(t_far, t_max);
     }
 
-    if (tmax >= tmin && tmax > 0)
-    {
-        outside = true;
-        if (tmin <= 0)
-        {
-            tmin = tmax;
-            tmin_n = tmax_n;
-            outside = false;
-        }
-        intersectionPoint = multiplyMV(box.transform, glm::vec4(getPointOnRay(q, tmin), 1.0f));
-        normal = glm::normalize(multiplyMV(box.invTranspose, glm::vec4(tmin_n, 0.0f)));
-        return glm::length(r.origin - intersectionPoint);
+    if (t_max >= t_min && t_max > 0.0f) {
+        return (t_min < 0.0f) ? t_max : t_min;
     }
-
-    return -1;
+    return -1.0f;
 }
 
 __host__ __device__ float sphereIntersectionTest(
     Geom sphere,
-    Ray r,
-    glm::vec3 &intersectionPoint,
-    glm::vec3 &normal,
-    bool &outside)
+    Ray r)
 {
-    float radius = .5;
+    const float radius2 = 0.25f; // 0.5f * 0.5f
 
+    // 变换光线到局部空间
     glm::vec3 ro = multiplyMV(sphere.inverseTransform, glm::vec4(r.origin, 1.0f));
-    glm::vec3 rd = glm::normalize(multiplyMV(sphere.inverseTransform, glm::vec4(r.direction, 0.0f)));
+    glm::vec3 rd = multiplyMV(sphere.inverseTransform, glm::vec4(r.direction, 0.0f));
 
-    Ray rt;
-    rt.origin = ro;
-    rt.direction = rd;
+    // 使用 B'（简化B项）的二次方程解法: At^2 + 2B't + C = 0
+    float a = glm::dot(rd, rd);
+    float b_prime = glm::dot(ro, rd);
+    float c = glm::dot(ro, ro) - radius2;
 
-    float vDotDirection = glm::dot(rt.origin, rt.direction);
-    float radicand = vDotDirection * vDotDirection - (glm::dot(rt.origin, rt.origin) - powf(radius, 2));
-    if (radicand < 0)
-    {
-        return -1;
+    float disc = b_prime * b_prime - a * c;
+
+    if (disc < 0.0f) {
+        return -1.0f;
     }
 
-    float squareRoot = sqrt(radicand);
-    float firstTerm = -vDotDirection;
-    float t1 = firstTerm + squareRoot;
-    float t2 = firstTerm - squareRoot;
+    float sqrtDisc = sqrtf(disc);
+    float t_min = (-b_prime - sqrtDisc) / a;
 
-    float t = 0;
-    if (t1 < 0 && t2 < 0)
-    {
-        return -1;
+    if (t_min > 0.0f) {
+        return t_min;
     }
-    else if (t1 > 0 && t2 > 0)
-    {
-        t = glm::min(t1, t2);
-        outside = true;
-    }
-    else
-    {
-        t = glm::max(t1, t2);
-        outside = false;
+    float t_max = (-b_prime + sqrtDisc) / a;
+
+    if (t_max > 0.0f) {
+        return t_max;
     }
 
-    glm::vec3 objspaceIntersection = getPointOnRay(rt, t);
-
-    intersectionPoint = multiplyMV(sphere.transform, glm::vec4(objspaceIntersection, 1.f));
-    normal = glm::normalize(multiplyMV(sphere.invTranspose, glm::vec4(objspaceIntersection, 0.f)));
-    if (!outside)
-    {
-        normal = -normal;
-    }
-
-    return glm::length(r.origin - intersectionPoint);
+    return -1.0f;
 }
 
-__host__ __device__ float planeIntersectionTest(
-    Geom plane,
-    Ray r,
-    glm::vec3& intersectionPoint,
-    glm::vec3& normal,
-    bool& outside)
+__device__ float planeIntersectionTest(const Geom& plane, const Ray& r)
 {
-    // 1. 变换光线到对象空间 (Object Space)
     glm::vec3 ro = multiplyMV(plane.inverseTransform, glm::vec4(r.origin, 1.0f));
-    glm::vec3 rd = glm::normalize(multiplyMV(plane.inverseTransform, glm::vec4(r.direction, 0.0f)));
-
-    Ray rt;
-    rt.origin = ro;
-    rt.direction = rd;
-
-    // 2. 射线与平面 Z=0 求交
-    // 平面方程: P.z = 0
-    // 射线方程: P = O + t*D => O.z + t*D.z = 0 => t = -O.z / D.z
-
-    // 如果光线平行于平面 (rd.z 接近 0)，则无交点
+    glm::vec3 rd = multiplyMV(plane.inverseTransform, glm::vec4(r.direction, 0.0f));
     if (glm::abs(rd.z) < 1e-6f) {
-        return -1;
+        return -1.0f;
     }
-
     float t = -ro.z / rd.z;
-
-    // 如果 t < 0，说明交点在光线背后
-    if (t < 0) {
-        return -1;
+    if (t < 0.0f) {
+        return -1.0f;
     }
-
-    // 3. 计算局部交点并判断边界
-    glm::vec3 objspaceIntersection = ro + t * rd;
-
-    // 检查是否在 [-0.5, 0.5] 的正方形范围内
-    if (glm::abs(objspaceIntersection.x) > 0.5f || glm::abs(objspaceIntersection.y) > 0.5f) {
-        return -1;
+    glm::vec3 p = ro + t * rd;
+    if (glm::abs(p.x) > 0.5f || glm::abs(p.y) > 0.5f) {
+        return -1.0f;
     }
-
-    // 4. 计算世界空间数据
-    intersectionPoint = multiplyMV(plane.transform, glm::vec4(objspaceIntersection, 1.f));
-
-    // 局部法线默认为 +Z (0, 0, 1)
-    glm::vec3 localNormal(0.0f, 0.0f, 1.0f);
-    normal = glm::normalize(multiplyMV(plane.invTranspose, glm::vec4(localNormal, 0.f)));
-
-    // 5. 处理双面渲染和 outside 标记
-    // 如果光线方向与法线点积 < 0，说明打在正面 (Outside)
-    // 如果光线方向与法线点积 > 0，说明打在背面，我们需要翻转法线
-    if (glm::dot(normal, r.direction) < 0) {
-        outside = true;
-    }
-    else {
-        outside = false;
-        normal = -normal; // 击中背面，翻转法线
-    }
-
-    return glm::length(r.origin - intersectionPoint);
+    return t;
 }
 
-__host__ __device__ float diskIntersectionTest(
-    Geom disk,
-    Ray r,
-    glm::vec3& intersectionPoint,
-    glm::vec3& normal,
-    bool& outside)
+__device__ float diskIntersectionTest(const Geom& disk, const Ray& r)
 {
-    // 1. 变换光线到对象空间
     glm::vec3 ro = multiplyMV(disk.inverseTransform, glm::vec4(r.origin, 1.0f));
-    glm::vec3 rd = glm::normalize(multiplyMV(disk.inverseTransform, glm::vec4(r.direction, 0.0f)));
-
-    // 2. 射线与平面 Z=0 求交 (逻辑同 Plane)
+    glm::vec3 rd = multiplyMV(disk.inverseTransform, glm::vec4(r.direction, 0.0f));
     if (glm::abs(rd.z) < 1e-6f) {
-        return -1;
+        return -1.0f;
     }
-
     float t = -ro.z / rd.z;
-
-    if (t < 0) {
-        return -1;
+    if (t < 0.0f) {
+        return -1.0f;
     }
-
-    // 3. 计算局部交点并判断是否在圆内
-    glm::vec3 objspaceIntersection = ro + t * rd;
-
-    // 检查半径: x^2 + y^2 <= r^2
-    // 默认半径 r = 0.5, r^2 = 0.25
-    float dist2 = objspaceIntersection.x * objspaceIntersection.x +
-        objspaceIntersection.y * objspaceIntersection.y;
-
+    glm::vec3 p = ro + t * rd;
+    float dist2 = p.x * p.x + p.y * p.y;
     if (dist2 > 0.25f) {
-        return -1;
+        return -1.0f;
     }
+    return t;
+}
 
-    // 4. 计算世界空间数据
-    intersectionPoint = multiplyMV(disk.transform, glm::vec4(objspaceIntersection, 1.f));
+__device__ glm::vec3 cubeGetNormal(const Geom& box, const Ray& worldRay, float worldT)
+{
+    glm::vec3 P_world = worldRay.origin + worldT * worldRay.direction;
+    glm::vec3 P_local = multiplyMV(box.inverseTransform, glm::vec4(P_world, 1.0f));
 
-    // 局部法线默认为 +Z (0, 0, 1)
-    glm::vec3 localNormal(0.0f, 0.0f, 1.0f);
-    normal = glm::normalize(multiplyMV(disk.invTranspose, glm::vec4(localNormal, 0.f)));
+    glm::vec3 N_local(0.0f);
+    float maxC = glm::max(glm::abs(P_local.x), glm::max(glm::abs(P_local.y), glm::abs(P_local.z)));
 
-    // 5. 处理法线方向
-    if (glm::dot(normal, r.direction) < 0) {
-        outside = true;
+    if (glm::abs(maxC - glm::abs(P_local.x)) < 1e-5f)
+        N_local = glm::vec3((P_local.x > 0) ? 1 : -1, 0, 0);
+    else if (glm::abs(maxC - glm::abs(P_local.y)) < 1e-5f)
+        N_local = glm::vec3(0, (P_local.y > 0) ? 1 : -1, 0);
+    else
+        N_local = glm::vec3(0, 0, (P_local.z > 0) ? 1 : -1);
+
+    return glm::normalize(multiplyMV(box.invTranspose, glm::vec4(N_local, 0.0f)));
+}
+
+__device__ glm::vec3 sphereGetNormal(const Geom& sphere, const Ray& worldRay, float worldT)
+{
+    glm::vec3 P_world = worldRay.origin + worldT * worldRay.direction;
+    // 对于以原点为中心的球体，法线 N_local 就是 P_local 本身。
+    glm::vec3 P_local = multiplyMV(sphere.inverseTransform, glm::vec4(P_world, 1.0f));
+    // 变换法线回世界空间
+    // 使用 Inverse Transpose 矩阵变换，并归一化。
+    return glm::normalize(multiplyMV(sphere.invTranspose, glm::vec4(P_local, 0.0f)));
+}
+
+__device__ glm::vec3 planeGetNormal(const Geom& plane, const Ray& worldRay, float worldT)
+{
+    glm::vec3 N_local(0.0f, 0.0f, 1.0f);
+    glm::vec3 N_world_unnormalized = multiplyMV(plane.invTranspose, glm::vec4(N_local, 0.0f));
+    glm::vec3 N_final = glm::normalize(N_world_unnormalized);
+    // 检查是否是背面击中
+    if (glm::dot(N_final, worldRay.direction) > 0.0f) {
+        N_final = -N_final;
     }
-    else {
-        outside = false;
-        normal = -normal;
-    }
+    return N_final;
+}
 
-    return glm::length(r.origin - intersectionPoint);
+__device__ glm::vec3 diskGetNormal(const Geom& disk, const Ray& worldRay, float worldT)
+{
+    glm::vec3 N_local(0.0f, 0.0f, 1.0f);
+    glm::vec3 N_world_unnormalized = multiplyMV(disk.invTranspose, glm::vec4(N_local, 0.0f));
+    glm::vec3 N_final = glm::normalize(N_world_unnormalized);
+    // 检查是否是背面击中
+    if (glm::dot(N_final, worldRay.direction) > 0.0f) {
+        N_final = -N_final;
+    }
+    return N_final;
 }
