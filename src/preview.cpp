@@ -202,6 +202,10 @@ bool init()
 void InitImguiData(GuiDataContainer* guiData)
 {
     imguiData = guiData;
+    // initialize displayed traced depth from loaded scene if available
+    if (imguiData != nullptr && scene != nullptr) {
+        imguiData->TracedDepth = scene->state.traceDepth;
+    }
 }
 
 
@@ -234,7 +238,20 @@ void RenderImGui()
     //    counter++;
     //ImGui::SameLine();
     //ImGui::Text("counter = %d", counter);
-    ImGui::Text("Traced Depth %d", imguiData->TracedDepth);
+    // Prefer reading directly from scene state to ensure accurate value
+    if (scene != nullptr) {
+        ImGui::Text("Traced Depth %d", scene->state.traceDepth);
+    } else if (imguiData != nullptr) {
+        ImGui::Text("Traced Depth %d", imguiData->TracedDepth);
+    } else {
+        ImGui::Text("Traced Depth %d", 0);
+    }
+
+    if (imguiData != nullptr) {
+        ImGui::Text("MRays/s: %.2f", imguiData->MraysPerSec);
+    } else {
+        ImGui::Text("MRays/s: %.2f", 0.0f);
+    }
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
     ImGui::End();
 

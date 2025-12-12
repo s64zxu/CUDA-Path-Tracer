@@ -62,6 +62,7 @@ set(headers
     src/sceneStructs.h
     src/preview.h
     src/utilities.h
+    src/cuda_utilities.h
     src/rng.h
 )
 
@@ -77,6 +78,7 @@ set(sources
     src/scene.cpp
     src/preview.cpp
     src/utilities.cpp
+    src/cuda_utilities.cu
 )
 
 set(imgui_headers

@@ -368,3 +368,39 @@ __host__ __device__ void sampleDisk(
         pdf = 0.0f;
     }
 }
+
+__host__ __device__ void SampleLight(
+    Geom* d_lights,
+    int num_lights,
+    unsigned int& seed,
+    glm::vec3& sample_point,
+    glm::vec3& sample_normal,
+    float& pdf_area,
+    int& light_idx)
+{
+    thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+    float r = rand_float(seed);
+    int light_index = glm::min((int)(r * num_lights), num_lights - 1);
+    const Geom& selected_light = d_lights[light_index];
+    float pdf_selection = 1.0f / (float)num_lights;
+    float pdf_geom = 0.0f;
+    glm::vec2 r_sample;
+    r_sample.x = rand_float(seed);
+    r_sample.y = rand_float(seed);
+    // 根据几何体类型采样 
+    if (selected_light.type == PLANE)
+    {
+        samplePlane(selected_light, r_sample, sample_point, sample_normal, pdf_geom);
+    }
+    else if (selected_light.type == DISK)
+    {
+        sampleDisk(selected_light, r_sample, sample_point, sample_normal, pdf_geom);
+    }
+    else if (selected_light.type == SPHERE)
+    {
+        sampleSphere(selected_light, r_sample, sample_point, sample_normal, pdf_geom);
+    }
+
+    pdf_area = pdf_selection * pdf_geom;
+    light_idx = light_index;
+}

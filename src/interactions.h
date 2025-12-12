@@ -171,3 +171,12 @@ __host__ __device__ void sampleDisk(
     glm::vec3& samplePoint,
     glm::vec3& normal,
     float& pdf);
+
+__host__ __device__ void SampleLight(
+    Geom* d_lights,
+    int num_lights,
+    unsigned int& seed,
+    glm::vec3& sample_point,
+    glm::vec3& sample_normal,
+    float& pdf_area,
+    int& light_idx);

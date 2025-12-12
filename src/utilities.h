@@ -17,13 +17,14 @@
 #define PDF_DIRAC_DELTA 1e10f
 #define RRDEPTH 3
 #define MAX_GEOMS 64 // 存储的几何体数量，用于初始化常量内存
-#define NUM_PATHS 800*600
+#define NUM_PATHS (1<<20)
 
 class GuiDataContainer
 {
 public:
-    GuiDataContainer() : TracedDepth(0) {}
+    GuiDataContainer() : TracedDepth(0), MraysPerSec(0.0f) {}
     int TracedDepth;
+    float MraysPerSec;
 };
 
 namespace utilityCore

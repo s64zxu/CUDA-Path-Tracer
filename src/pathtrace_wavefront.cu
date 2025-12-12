@@ -12,6 +12,7 @@
 #include "glm/glm.hpp"
 #include "glm/gtx/norm.hpp"
 #include "utilities.h"
+#include "cuda_utilities.h"
 #include "intersections.h"
 #include "interactions.h"
 #include "rng.h"
@@ -19,94 +20,78 @@
 
 #include <cuda_runtime.h>
 
-
-#define ERRORCHECK 1
-#define FIRSTBOUCNCACHE 1
-#define MATERIALSSORTING 0
-#define RAYSCOMPACTION 1
-
+#define CUDA_ENABLE_ERROR_CHECK 0
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
+#if CUDA_ENABLE_ERROR_CHECK
+// 开启时：调用检查函数
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
-#define c_geoms ((const Geom*)c_geoms_storage)
-void checkCUDAErrorFn(const char* msg, const char* file, int line)
-{
-#if ERRORCHECK
-    cudaDeviceSynchronize();
-    cudaError_t err = cudaGetLastError();
-    if (cudaSuccess == err)
-    {
-        return;
-    }
+#else
+// 关闭时：替换为空，完全无开销
+#define checkCUDAError(msg)
+#endif
 
-    fprintf(stderr, "CUDA error");
-    if (file)
-    {
-        fprintf(stderr, " (%s:%d)", file, line);
-    }
-    fprintf(stderr, ": %s: %s\n", msg, cudaGetErrorString(err));
-#ifdef _WIN32
-    getchar();
-#endif // _WIN32
-    exit(EXIT_FAILURE);
-#endif // ERRORCHECK
-}
 
-__host__ __device__ thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int depth)
-{
-    int h = utilhash((1 << 31) | (depth << 22) | iter) ^ utilhash(index);
-    return thrust::default_random_engine(h);
-}
+#define K_FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
+#define CHECK_CUDA_ERROR(msg) checkCUDAErrorFn(msg, K_FILENAME, __LINE__)
+#define C_GEOMS ((const Geom*)c_geoms_storage)
+
 
 //Kernel that writes the image to the OpenGL PBO directly.
-__global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm::vec3* image)
+__global__ void SendImageToPBOKernel(uchar4* pbo, glm::ivec2 resolution, int iter, glm::vec3* d_image, int* d_sample_count)
 {
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
     int y = (blockIdx.y * blockDim.y) + threadIdx.y;
+    int index = x + (y * resolution.x);
 
     if (x < resolution.x && y < resolution.y)
     {
-        int index = x + (y * resolution.x);
-        glm::vec3 pix = image[index];
+        glm::vec3 pix = d_image[index];
+        int samples = d_sample_count[index]; // 获取真实采样数
 
-        glm::ivec3 color;
-        color.x = glm::clamp((int)(pix.x / iter * 255.0), 0, 255);
-        color.y = glm::clamp((int)(pix.y / iter * 255.0), 0, 255);
-        color.z = glm::clamp((int)(pix.z / iter * 255.0), 0, 255);
+        // 避免除以0
+        if (samples == 0) { pbo[index] = make_uchar4(0, 0, 0, 0); return; }
 
-        // Each thread writes one pixel location in the texture (textel)
+        glm::vec3 color_vec = pix / (float)samples; // 使用真实采样数归一化
+
+        // Gamma Correction (可选，但推荐)
+        // color_vec = glm::pow(color_vec, glm::vec3(1.0f/2.2f)); 
+
         pbo[index].w = 0;
-        pbo[index].x = color.x;
-        pbo[index].y = color.y;
-        pbo[index].z = color.z;
+        pbo[index].x = glm::clamp((int)(color_vec.x * 255.0), 0, 255);
+        pbo[index].y = glm::clamp((int)(color_vec.y * 255.0), 0, 255);
+        pbo[index].z = glm::clamp((int)(color_vec.z * 255.0), 0, 255);
     }
 }
 
+
 static Scene* hst_scene = NULL;
-static GuiDataContainer* guiData = NULL;
-static glm::vec3* dev_image = NULL;
-static Material* dev_materials = NULL;
-static Geom* dev_light_sources = NULL; // Light source sample
-static int* dev_num_lights = NULL;
-static int* dev_material_ids = NULL; // used for materials sorting
+static GuiDataContainer* hst_gui_data = NULL;
+static glm::vec3* d_image = NULL;
+static Material* d_materials = NULL;
+static Geom* d_light_sources = NULL; // Light source sample
+static int* d_num_lights = NULL;
+static int* d_material_ids = NULL; // used for materials sorting
 
 // wavefront data
-static PathState path_state;
+static PathState d_path_state;
+static int* d_global_ray_counter = NULL;
+static int* d_pixel_sample_count = NULL;
 // queue buffer
-static int* dev_extension_ray_queue = NULL;
-static int* dev_shadow_ray_queue = NULL;
-static int* dev_pbr_queue = NULL;
-static int* dev_diffuse_queue = NULL;
-static int* dev_specular_queue = NULL;
-static int* dev_new_path_queue = NULL;
+static int* d_extension_ray_queue = NULL;
+static int* d_shadow_ray_queue = NULL;
+static int* d_pbr_queue = NULL;
+static int* d_diffuse_queue = NULL;
+static int* d_specular_queue = NULL;
+static int* d_new_path_queue = NULL;
 // counter
-static int* dev_extension_ray_counter = NULL;
-static int* dev_pbr_counter = NULL;
-static int* dev_diffuse_counter = NULL;
-static int* dev_specular_counter = NULL;
-static int* dev_new_path_counter = NULL;
+static int* d_extension_ray_counter = NULL;
+static int* d_pbr_counter = NULL;
+static int* d_diffuse_counter = NULL;
+static int* d_specular_counter = NULL;
+static int* d_new_path_counter = NULL;
 // shadow queue
-static ShadowQueue shadow_queue;
-static int* dev_shadow_queue_counter = NULL;
+static ShadowQueue d_shadow_queue;
+static int* d_shadow_queue_counter = NULL;
 
 // 1. 使用 unsigned char 数组代替 Geom 数组，骗过编译器
 // 2. 必须加上 __align__(16)，因为 Geom 里有 mat4，GPU 读取需要 16 字节对齐
@@ -114,43 +99,54 @@ __constant__ __align__(16) unsigned char c_geoms_storage[MAX_GEOMS * sizeof(Geom
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
-    guiData = imGuiData;
+    hst_gui_data = imGuiData;
 }
 
-void pathtraceInit(Scene* scene)
+void PathtraceInit(Scene* scene)
 {
     hst_scene = scene;
 
-    const Camera& cam = hst_scene->state.camera;
-    const int pixelcount = cam.resolution.x * cam.resolution.y;
+    // ensure ImGui shows the configured trace depth as soon as scene is initialized
+    if (hst_gui_data != NULL) {
+        hst_gui_data->TracedDepth = hst_scene->state.traceDepth;
+    }
 
-    cudaMalloc(&dev_image, pixelcount * sizeof(glm::vec3));
-    cudaMemset(dev_image, 0, pixelcount * sizeof(glm::vec3));
+    const Camera& cam = hst_scene->state.camera;
+    const int pixel_count = cam.resolution.x * cam.resolution.y;
+
+    cudaMalloc(&d_image, pixel_count * sizeof(glm::vec3));
+    cudaMemset(d_image, 0, pixel_count * sizeof(glm::vec3));
 
     cudaMemcpyToSymbol(c_geoms_storage, scene->geoms.data(), scene->geoms.size() * sizeof(Geom));
 
-    cudaMalloc(&dev_materials, scene->materials.size() * sizeof(Material));
-    cudaMemcpy(dev_materials, scene->materials.data(), scene->materials.size() * sizeof(Material), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_materials, scene->materials.size() * sizeof(Material));
+    cudaMemcpy(d_materials, scene->materials.data(), scene->materials.size() * sizeof(Material), cudaMemcpyHostToDevice);
 
-    vector<Geom> lightSouces;
+    vector<Geom> h_light_sources;
     for (auto& i : scene->geoms)
     {
         if (scene->materials[i.materialid].emittance != 0)
         {
-            lightSouces.push_back(i);
+            h_light_sources.push_back(i);
         }
     }
 
-    int num_lights = lightSouces.size();
+    int num_lights = h_light_sources.size();
 
-    cudaMalloc(&dev_light_sources, num_lights * sizeof(Geom));
-    cudaMemcpy(dev_light_sources, lightSouces.data(), num_lights * sizeof(Geom), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_light_sources, num_lights * sizeof(Geom));
+    cudaMemcpy(d_light_sources, h_light_sources.data(), num_lights * sizeof(Geom), cudaMemcpyHostToDevice);
 
-    cudaMalloc(&dev_num_lights, sizeof(int));
-    cudaMemcpy(dev_num_lights, &num_lights, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_num_lights, sizeof(int));
+    cudaMemcpy(d_num_lights, &num_lights, sizeof(int), cudaMemcpyHostToDevice);
 
-    cudaMalloc(&dev_material_ids, pixelcount * sizeof(int));
-    cudaMemset(dev_material_ids, 0, pixelcount * sizeof(int));
+    cudaMalloc(&d_material_ids, pixel_count * sizeof(int));
+    cudaMemset(d_material_ids, 0, pixel_count * sizeof(int));
+
+    cudaMalloc(&d_global_ray_counter, sizeof(int));
+    cudaMemset(d_global_ray_counter, 0, sizeof(int));
+
+    cudaMalloc(&d_pixel_sample_count, pixel_count * sizeof(int));
+    cudaMemset(d_pixel_sample_count, 0, pixel_count * sizeof(int));
 
     // init wavefront data
     int num_paths = NUM_PATHS;
@@ -159,254 +155,288 @@ void pathtraceInit(Scene* scene)
     size_t size_uint = num_paths * sizeof(unsigned int);
 
     // Ray Info 
-    cudaMalloc((void**)&path_state.ray_dir_x, size_float);
-    cudaMalloc((void**)&path_state.ray_dir_y, size_float);
-    cudaMalloc((void**)&path_state.ray_dir_z, size_float);
+    cudaMalloc((void**)&d_path_state.ray_dir_x, size_float);
+    cudaMalloc((void**)&d_path_state.ray_dir_y, size_float);
+    cudaMalloc((void**)&d_path_state.ray_dir_z, size_float);
 
-    cudaMalloc((void**)&path_state.ray_ori_x, size_float);
-    cudaMalloc((void**)&path_state.ray_ori_y, size_float);
-    cudaMalloc((void**)&path_state.ray_ori_z, size_float);
+    cudaMalloc((void**)&d_path_state.ray_ori_x, size_float);
+    cudaMalloc((void**)&d_path_state.ray_ori_y, size_float);
+    cudaMalloc((void**)&d_path_state.ray_ori_z, size_float);
 
     // Intersection Info
-    cudaMalloc((void**)&path_state.ray_t, size_float);
-    cudaMalloc((void**)&path_state.hit_geom_id, size_int);
-    cudaMalloc((void**)&path_state.material_id, size_int);
-    cudaMalloc((void**)&path_state.hit_nor_x, size_float);
-    cudaMalloc((void**)&path_state.hit_nor_y, size_float);
-    cudaMalloc((void**)&path_state.hit_nor_z, size_float);
+    cudaMalloc((void**)&d_path_state.ray_t, size_float);
+    cudaMalloc((void**)&d_path_state.hit_geom_id, size_int);
+    cudaMalloc((void**)&d_path_state.material_id, size_int);
+    cudaMalloc((void**)&d_path_state.hit_nor_x, size_float);
+    cudaMalloc((void**)&d_path_state.hit_nor_y, size_float);
+    cudaMalloc((void**)&d_path_state.hit_nor_z, size_float);
 
     // Path Info
-    cudaMalloc((void**)&path_state.throughput_x, size_float);
-    cudaMalloc((void**)&path_state.throughput_y, size_float);
-    cudaMalloc((void**)&path_state.throughput_z, size_float);
+    cudaMalloc((void**)&d_path_state.throughput_x, size_float);
+    cudaMalloc((void**)&d_path_state.throughput_y, size_float);
+    cudaMalloc((void**)&d_path_state.throughput_z, size_float);
 
-    cudaMalloc((void**)&path_state.pixel_idx, size_int);
-    cudaMalloc((void**)&path_state.last_pdf, size_float);
-    cudaMalloc((void**)&path_state.remaining_bounces, size_int);
-    cudaMalloc((void**)&path_state.rng_state, size_uint);
+    cudaMalloc((void**)&d_path_state.pixel_idx, size_int);
+    cudaMalloc((void**)&d_path_state.last_pdf, size_float);
+    cudaMalloc((void**)&d_path_state.remaining_bounces, size_int);
+    cudaMalloc((void**)&d_path_state.rng_state, size_uint);
 
-    cudaMemset(path_state.hit_geom_id, -1, size_int);
-    cudaMemset(path_state.pixel_idx, -1, size_int);
+    cudaMemset(d_path_state.hit_geom_id, -1, size_int);
+    cudaMemset(d_path_state.pixel_idx, -1, size_int);
+    cudaMemset(d_path_state.remaining_bounces, -1, size_int); // 初始化，便于初始生成光线填充光线池
 
     // queue buffer
-    cudaMalloc((void**)&dev_extension_ray_queue, size_int);
-    cudaMalloc((void**)&dev_shadow_ray_queue, size_int);
-    cudaMalloc((void**)&dev_pbr_queue, size_int);
-    cudaMalloc((void**)&dev_diffuse_queue, size_int);
-    cudaMalloc((void**)&dev_specular_queue, size_int);
-    cudaMalloc((void**)&dev_new_path_queue, size_int);
+    cudaMalloc((void**)&d_extension_ray_queue, size_int);
+    cudaMalloc((void**)&d_shadow_ray_queue, size_int);
+    cudaMalloc((void**)&d_pbr_queue, size_int);
+    cudaMalloc((void**)&d_diffuse_queue, size_int);
+    cudaMalloc((void**)&d_specular_queue, size_int);
+    cudaMalloc((void**)&d_new_path_queue, size_int);
 
     // counter
-    cudaMalloc((void**)&dev_extension_ray_counter, sizeof(int));
-    cudaMalloc((void**)&dev_pbr_counter, sizeof(int));
-    cudaMalloc((void**)&dev_diffuse_counter, sizeof(int));
-    cudaMalloc((void**)&dev_specular_counter, sizeof(int));
-    cudaMalloc((void**)&dev_new_path_counter, sizeof(int));
+    cudaMalloc((void**)&d_extension_ray_counter, sizeof(int));
+    cudaMalloc((void**)&d_pbr_counter, sizeof(int));
+    cudaMalloc((void**)&d_diffuse_counter, sizeof(int));
+    cudaMalloc((void**)&d_specular_counter, sizeof(int));
+    cudaMalloc((void**)&d_new_path_counter, sizeof(int));
 
-    cudaMemset(dev_extension_ray_counter, 0, sizeof(int));
-    cudaMemset(dev_diffuse_counter, 0, sizeof(int));
-    cudaMemset(dev_specular_counter, 0, sizeof(int));
+    cudaMemset(d_extension_ray_counter, 0, sizeof(int));
+    cudaMemset(d_diffuse_counter, 0, sizeof(int));
+    cudaMemset(d_specular_counter, 0, sizeof(int));
 
     // shadow queue
     // 几何数组
-    cudaMalloc((void**)&shadow_queue.ray_ori_x, size_float);
-    cudaMalloc((void**)&shadow_queue.ray_ori_y, size_float);
-    cudaMalloc((void**)&shadow_queue.ray_ori_z, size_float);
+    cudaMalloc((void**)&d_shadow_queue.ray_ori_x, size_float);
+    cudaMalloc((void**)&d_shadow_queue.ray_ori_y, size_float);
+    cudaMalloc((void**)&d_shadow_queue.ray_ori_z, size_float);
 
-    cudaMalloc((void**)&shadow_queue.ray_dir_x, size_float);
-    cudaMalloc((void**)&shadow_queue.ray_dir_y, size_float);
-    cudaMalloc((void**)&shadow_queue.ray_dir_z, size_float);
+    cudaMalloc((void**)&d_shadow_queue.ray_dir_x, size_float);
+    cudaMalloc((void**)&d_shadow_queue.ray_dir_y, size_float);
+    cudaMalloc((void**)&d_shadow_queue.ray_dir_z, size_float);
 
-    cudaMalloc((void**)&shadow_queue.ray_tmax, size_float);
+    cudaMalloc((void**)&d_shadow_queue.ray_tmax, size_float);
 
     // 能量/颜色数组
-    cudaMalloc((void**)&shadow_queue.radiance_x, size_float);
-    cudaMalloc((void**)&shadow_queue.radiance_y, size_float);
-    cudaMalloc((void**)&shadow_queue.radiance_z, size_float);
+    cudaMalloc((void**)&d_shadow_queue.radiance_x, size_float);
+    cudaMalloc((void**)&d_shadow_queue.radiance_y, size_float);
+    cudaMalloc((void**)&d_shadow_queue.radiance_z, size_float);
 
     // 像素索引
-    cudaMalloc((void**)&shadow_queue.pixel_idx, size_int);
+    cudaMalloc((void**)&d_shadow_queue.pixel_idx, size_int);
 
     // 计数器
-    cudaMalloc((void**)&dev_shadow_queue_counter, sizeof(int));
-    cudaMemset(dev_shadow_queue_counter, 0, sizeof(int));
+    cudaMalloc((void**)&d_shadow_queue_counter, sizeof(int));
+    cudaMemset(d_shadow_queue_counter, 0, sizeof(int));
 
-    // TODO: initialize any extra device memeory you need
-    checkCUDAError("pathtraceInit");
+    CHECK_CUDA_ERROR("PathtraceInit");
 }
 
-void pathtraceFree()
+void PathtraceFree()
 {
-    cudaFree(dev_image);  // no-op if dev_image is null
-    cudaFree(dev_materials);
-    cudaFree(dev_light_sources);
-    cudaFree(dev_num_lights);
-    cudaFree(dev_material_ids);
+    cudaFree(d_image);  // no-op if dev_image is null
+    cudaFree(d_materials);
+    cudaFree(d_light_sources);
+    cudaFree(d_num_lights);
+    cudaFree(d_material_ids);
+
+    cudaFree(d_global_ray_counter);
+
+    cudaFree(d_pixel_sample_count);
 
     // free wavefront data
-    cudaFree(path_state.ray_dir_x);
-    cudaFree(path_state.ray_dir_y);
-    cudaFree(path_state.ray_dir_z);
+    cudaFree(d_path_state.ray_dir_x);
+    cudaFree(d_path_state.ray_dir_y);
+    cudaFree(d_path_state.ray_dir_z);
 
-    cudaFree(path_state.ray_ori_x);
-    cudaFree(path_state.ray_ori_y);
-    cudaFree(path_state.ray_ori_z);
+    cudaFree(d_path_state.ray_ori_x);
+    cudaFree(d_path_state.ray_ori_y);
+    cudaFree(d_path_state.ray_ori_z);
 
-    cudaFree(path_state.ray_t);
-    cudaFree(path_state.hit_geom_id);
-    cudaFree(path_state.material_id);
-    cudaFree(path_state.hit_nor_x);
-    cudaFree(path_state.hit_nor_y);
-    cudaFree(path_state.hit_nor_z);
+    cudaFree(d_path_state.ray_t);
+    cudaFree(d_path_state.hit_geom_id);
+    cudaFree(d_path_state.material_id);
+    cudaFree(d_path_state.hit_nor_x);
+    cudaFree(d_path_state.hit_nor_y);
+    cudaFree(d_path_state.hit_nor_z);
 
 
-    cudaFree(path_state.throughput_x);
-    cudaFree(path_state.throughput_y);
-    cudaFree(path_state.throughput_z);
+    cudaFree(d_path_state.throughput_x);
+    cudaFree(d_path_state.throughput_y);
+    cudaFree(d_path_state.throughput_z);
 
-    cudaFree(path_state.pixel_idx);
-    cudaFree(path_state.last_pdf);
-    cudaFree(path_state.remaining_bounces);
+    cudaFree(d_path_state.pixel_idx);
+    cudaFree(d_path_state.last_pdf);
+    cudaFree(d_path_state.remaining_bounces);
 
-    cudaFree(path_state.rng_state);
+    cudaFree(d_path_state.rng_state);
 
     // 释放 Queues
-    cudaFree(dev_extension_ray_queue);
-    cudaFree(dev_shadow_ray_queue);
-    cudaFree(dev_pbr_queue);
-    cudaFree(dev_diffuse_queue);
-    cudaFree(dev_specular_queue);
-    cudaFree(dev_new_path_queue);
+    cudaFree(d_extension_ray_queue);
+    cudaFree(d_shadow_ray_queue);
+    cudaFree(d_pbr_queue);
+    cudaFree(d_diffuse_queue);
+    cudaFree(d_specular_queue);
+    cudaFree(d_new_path_queue);
 
     // 释放 Counters
-    cudaFree(dev_extension_ray_counter);
+    cudaFree(d_extension_ray_counter);
 
-    cudaFree(dev_pbr_counter);
-    cudaFree(dev_diffuse_counter);
-    cudaFree(dev_specular_counter);
-    cudaFree(dev_new_path_counter);
+    cudaFree(d_pbr_counter);
+    cudaFree(d_diffuse_counter);
+    cudaFree(d_specular_counter);
+    cudaFree(d_new_path_counter);
 
     // 释放shadow queue
-    cudaFree(shadow_queue.ray_ori_x);
-    cudaFree(shadow_queue.ray_ori_y);
-    cudaFree(shadow_queue.ray_ori_z);
+    cudaFree(d_shadow_queue.ray_ori_x);
+    cudaFree(d_shadow_queue.ray_ori_y);
+    cudaFree(d_shadow_queue.ray_ori_z);
 
-    cudaFree(shadow_queue.ray_dir_x);
-    cudaFree(shadow_queue.ray_dir_y);
-    cudaFree(shadow_queue.ray_dir_z);
+    cudaFree(d_shadow_queue.ray_dir_x);
+    cudaFree(d_shadow_queue.ray_dir_y);
+    cudaFree(d_shadow_queue.ray_dir_z);
 
-    cudaFree(shadow_queue.ray_tmax);
+    cudaFree(d_shadow_queue.ray_tmax);
 
-    cudaFree(shadow_queue.radiance_x);
-    cudaFree(shadow_queue.radiance_y);
-    cudaFree(shadow_queue.radiance_z);
+    cudaFree(d_shadow_queue.radiance_x);
+    cudaFree(d_shadow_queue.radiance_y);
+    cudaFree(d_shadow_queue.radiance_z);
 
-    cudaFree(shadow_queue.pixel_idx);
+    cudaFree(d_shadow_queue.pixel_idx);
 
-    cudaFree(dev_shadow_queue_counter);
+    cudaFree(d_shadow_queue_counter);
 
-    checkCUDAError("pathtraceFree");
-}
-
-__device__ void initPathState(
-    int path_idx,
-    int pixel_idx,
-    Camera cam,
-    int iter,
-    int trace_depth,
-    PathState path_state)
-{
-    int x = pixel_idx % cam.resolution.x;
-    int y = pixel_idx / cam.resolution.x;
-
-    // 1. Antialiasing (Jitter)
-    unsigned int seed = wang_hash((iter * 19990303) + pixel_idx);
-    if (seed == 0) seed = 1;
-    float jitterX = rand_float(seed) - 0.5f;
-    float jitterY = rand_float(seed) - 0.5f;
-
-    // 2. Camera Ray Generation
-    glm::vec3 dir = glm::normalize(cam.view
-        - cam.right * cam.pixelLength.x * ((float)x + jitterX - (float)cam.resolution.x * 0.5f)
-        - cam.up * cam.pixelLength.y * ((float)y + jitterY - (float)cam.resolution.y * 0.5f)
-    );
-
-    // 3. Write to Global Memory (SoA)
-    path_state.ray_ori_x[path_idx] = cam.position.x;
-    path_state.ray_ori_y[path_idx] = cam.position.y;
-    path_state.ray_ori_z[path_idx] = cam.position.z;
-
-    path_state.ray_dir_x[path_idx] = dir.x;
-    path_state.ray_dir_y[path_idx] = dir.y;
-    path_state.ray_dir_z[path_idx] = dir.z;
-
-    path_state.ray_t[path_idx] = FLT_MAX;
-    path_state.hit_geom_id[path_idx] = -1;
-    path_state.material_id[path_idx] = -1;
-
-    path_state.throughput_x[path_idx] = 1.0f;
-    path_state.throughput_y[path_idx] = 1.0f;
-    path_state.throughput_z[path_idx] = 1.0f;
-
-    path_state.pixel_idx[path_idx] = pixel_idx;
-    path_state.last_pdf[path_idx] = 0.0f;
-    path_state.remaining_bounces[path_idx] = trace_depth;
-
-    path_state.rng_state[path_idx] = seed;
+    CHECK_CUDA_ERROR("PathtraceFree");
 }
 
 
-/**
-* Generate PathSegments with rays from the camera through the screen into the
-* scene, which is the first bounce of rays.
-*
-* Antialiasing - add rays for sub-pixel sampling
-* motion blur - jitter rays "in time"
-* lens effect - jitter ray origin positions based on a lens
-*/
-__global__ void generateRayFromCamera(Camera cam, int iter, int trace_depth, PathState path_state)
-{
-    int x = (blockIdx.x * blockDim.x) + threadIdx.x;
-    int y = (blockIdx.y * blockDim.y) + threadIdx.y;
-
-    if (x < cam.resolution.x && y < cam.resolution.y) {
-        int index = x + (y * cam.resolution.x);
-        initPathState(index, index, cam, iter, trace_depth, path_state);
+__global__ void InitPathPoolKernel(PathState d_path_state, int pool_size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < pool_size) {
+        // 标记为死亡，Logic Kernel 会识别并将其送入重生队列
+        d_path_state.remaining_bounces[idx] = -1;
+        d_path_state.hit_geom_id[idx] = -1;
+        d_path_state.pixel_idx[idx] = 0; // 默认值
     }
 }
 
-// 为有对应光线死亡的像素生成新的光线
-__global__ void regenerateNewRay(Camera cam, int iter, int trace_depth, PathState path_state, int* new_path_queue, int new_path_counter)
+__device__ int DispatchPathIndex(int* d_counter) {
+    // 1. 获取当前活跃线程掩码 (通过分支进入当前函数的线程）
+    unsigned int mask = __activemask();
+
+
+    // 3. 计算局部偏移量 (Local Offset)
+    // 统计 mask 中，当前 lane_id 之前的位有多少个是 1
+    int lane_id = threadIdx.x & 0x1f; // 等价于 % 32
+    unsigned int lower_mask = mask & ((1U << lane_id) - 1);
+    int local_offset = __popc(lower_mask);
+
+    // 4. 选出 Leader 执行原子操作
+    // __ffs (Find First Set) 返回 1-based 索引，所以要减 1
+    int leader_lane = __ffs(mask) - 1;
+
+    int base_offset = 0;
+    if (lane_id == leader_lane) {
+        // 统计 Warp 中总共需要多少个槽位
+        int total_count = __popc(mask);
+        base_offset = atomicAdd(d_counter, total_count);
+    }
+
+    // 5. 广播基地址 (Base Offset)
+    // 将 Leader 拿到的 base_offset 广播给 mask 中的所有线程
+    base_offset = __shfl_sync(mask, base_offset, leader_lane);
+
+    // 6. 返回最终写入位置
+    return base_offset + local_offset;
+}
+
+// 读取 new path 队列，初始化新路径
+__global__ void GenerateCameraRaysKernel(
+    Camera cam,
+    int trace_depth,
+    PathState d_path_state,
+    int* d_new_path_queue, int new_path_count,
+    int* d_extension_ray_queue, int* d_extension_ray_counter,
+    int* d_global_ray_counter,
+    int total_pixels,
+    int* d_sample_count)
 {
     int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-    if (queue_index < new_path_counter) {
-        // 1. 从队列拿到“空闲槽位 ID”
-        int path_idx = new_path_queue[queue_index];
+    if (queue_index < new_path_count) {
+        // 从队列拿到“空闲槽位 ID”
+        int path_slot_id = d_new_path_queue[queue_index];
 
-        // 2. 查一下这个槽位属于哪个像素 (Persistent Mapping)
-        // 注意：这要求 path_state.pixel_idx 在初始化时必须已经写好了正确的像素ID
-        int pixel_idx = path_state.pixel_idx[path_idx];
+        // 像素任务 ID //TODO 优化
+        int global_job_id = DispatchPathIndex(d_global_ray_counter);
 
-        initPathState(path_idx, pixel_idx, cam, iter, trace_depth, path_state);
+        // 保证渲染是均匀的
+        int pixel_idx = global_job_id % total_pixels;
+
+        // 采样轮数
+        int sample_idx = global_job_id / total_pixels;
+
+        atomicAdd(&d_sample_count[pixel_idx], 1);
+
+        d_path_state.pixel_idx[path_slot_id] = pixel_idx;
+
+        int x = pixel_idx % cam.resolution.x;
+        int y = pixel_idx / cam.resolution.x;
+
+        // Antialiasing (Jitter)
+        unsigned int seed = wang_hash((sample_idx * 19990303) + pixel_idx);
+        if (seed == 0) seed = 1;
+        float jitterX = rand_float(seed) - 0.5f;
+        float jitterY = rand_float(seed) - 0.5f;
+
+        // Camera Ray Generation
+        glm::vec3 dir = glm::normalize(cam.view
+            - cam.right * cam.pixelLength.x * ((float)x + jitterX - (float)cam.resolution.x * 0.5f)
+            - cam.up * cam.pixelLength.y * ((float)y + jitterY - (float)cam.resolution.y * 0.5f)
+        );
+
+        // Write Ray Info to Global Memory (SoA)
+        d_path_state.ray_ori_x[path_slot_id] = cam.position.x;
+        d_path_state.ray_ori_y[path_slot_id] = cam.position.y;
+        d_path_state.ray_ori_z[path_slot_id] = cam.position.z;
+
+        d_path_state.ray_dir_x[path_slot_id] = dir.x;
+        d_path_state.ray_dir_y[path_slot_id] = dir.y;
+        d_path_state.ray_dir_z[path_slot_id] = dir.z;
+
+        d_path_state.ray_t[path_slot_id] = FLT_MAX;
+        d_path_state.hit_geom_id[path_slot_id] = -1;
+        d_path_state.material_id[path_slot_id] = -1;
+
+        d_path_state.throughput_x[path_slot_id] = 1.0f;
+        d_path_state.throughput_y[path_slot_id] = 1.0f;
+        d_path_state.throughput_z[path_slot_id] = 1.0f;
+
+        d_path_state.pixel_idx[path_slot_id] = pixel_idx;
+        d_path_state.last_pdf[path_slot_id] = 0.0f;
+        d_path_state.remaining_bounces[path_slot_id] = trace_depth;
+
+        d_path_state.rng_state[path_slot_id] = seed;
+
+        // enqueue to extension ray queue
+        int extension_path_idx = DispatchPathIndex(d_extension_ray_counter);
+        d_extension_ray_queue[extension_path_idx] = path_slot_id;
     }
 }
 
-// TODO:
-// computeIntersections handles generating ray intersections ONLY.
-// Generating new rays is handled in your shader(s).
-// Feel free to modify the code below.
-__global__ void traceExtensionRay(
-    int num_paths,
+
+__global__ void TraceExtensionRayKernel(
+    int* d_extension_ray_queue,
+    int* d_extension_ray_counter,
     int geoms_size,
-    PathState path_state)
+    PathState d_path_state)
 {
-    int path_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (path_index < num_paths && path_state.remaining_bounces[path_index] >= 0) // 仅求交有效光线
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < *d_extension_ray_counter)
     {
+        int path_index = d_extension_ray_queue[index];
         Ray ray;
-        ray.direction = glm::vec3(path_state.ray_dir_x[path_index], path_state.ray_dir_y[path_index], path_state.ray_dir_z[path_index]);
-        ray.origin = glm::vec3(path_state.ray_ori_x[path_index], path_state.ray_ori_y[path_index], path_state.ray_ori_z[path_index]);
+        ray.direction = glm::vec3(d_path_state.ray_dir_x[path_index], d_path_state.ray_dir_y[path_index], d_path_state.ray_dir_z[path_index]);
+        ray.origin = glm::vec3(d_path_state.ray_ori_x[path_index], d_path_state.ray_ori_y[path_index], d_path_state.ray_ori_z[path_index]);
         int hit_geom_index = -1;
         float t;
         float t_min = FLT_MAX;
@@ -415,7 +445,7 @@ __global__ void traceExtensionRay(
         // Lazy Normal Evaluation
         for (int i = 0; i < geoms_size; i++)
         {
-            const Geom& geom = c_geoms[i];
+            const Geom& geom = C_GEOMS[i];
 
             if (geom.type == CUBE)
             {
@@ -443,61 +473,64 @@ __global__ void traceExtensionRay(
         // 未命中
         if (hit_geom_index == -1)
         {
-            path_state.ray_t[path_index] = -1.0f;
-            path_state.hit_geom_id[path_index] = -1.0f;
+            d_path_state.ray_t[path_index] = -1.0f;
+            d_path_state.hit_geom_id[path_index] = -1.0f;
         }
         else // 为命中的物体计算法线和交点
         {
-            bool outside = true;
+            // bool outside = true;
             glm::vec3 normal = glm::vec3(0.0f, 0.0f, 1.0f);
-            if (c_geoms[hit_geom_index].type == CUBE)
+            if (C_GEOMS[hit_geom_index].type == CUBE)
             {
-                normal = cubeGetNormal(c_geoms[hit_geom_index], ray, t_min);
+                normal = cubeGetNormal(C_GEOMS[hit_geom_index], ray, t_min);
             }
-            else if (c_geoms[hit_geom_index].type == SPHERE)
+            else if (C_GEOMS[hit_geom_index].type == SPHERE)
             {
-                normal = sphereGetNormal(c_geoms[hit_geom_index], ray, t_min);
+                normal = sphereGetNormal(C_GEOMS[hit_geom_index], ray, t_min);
             }
-            else if (c_geoms[hit_geom_index].type == DISK)
+            else if (C_GEOMS[hit_geom_index].type == DISK)
             {
-                normal = diskGetNormal(c_geoms[hit_geom_index], ray, t_min);
+                normal = diskGetNormal(C_GEOMS[hit_geom_index], ray, t_min);
             }
             else
             {
-                normal = planeGetNormal(c_geoms[hit_geom_index], ray, t_min);
+                normal = planeGetNormal(C_GEOMS[hit_geom_index], ray, t_min);
             }
             // The ray hits something
-            path_state.ray_t[path_index] = t_min;
-            path_state.material_id[path_index] = c_geoms[hit_geom_index].materialid;
-            path_state.hit_geom_id[path_index] = hit_geom_index;
-            path_state.hit_nor_x[path_index] = normal.x;
-            path_state.hit_nor_y[path_index] = normal.y;
-            path_state.hit_nor_z[path_index] = normal.z;
+            d_path_state.ray_t[path_index] = t_min;
+            d_path_state.material_id[path_index] = C_GEOMS[hit_geom_index].materialid;
+            d_path_state.hit_geom_id[path_index] = hit_geom_index;
+            d_path_state.hit_nor_x[path_index] = normal.x;
+            d_path_state.hit_nor_y[path_index] = normal.y;
+            d_path_state.hit_nor_z[path_index] = normal.z;
         }
     }
 }
 
 // 读取shadow ray 缓冲区，若
-__global__ void traceShadowRay(ShadowQueue shadow_queue, int dev_shadow_queue_counter, glm::vec3* image, int geomsSize)
+__global__ void TraceShadowRayKernel(
+    ShadowQueue d_shadow_queue,
+    int d_shadow_queue_counter,
+    glm::vec3* d_image, int geoms_size)
 {
     int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
-    if (queue_index < dev_shadow_queue_counter)
+    if (queue_index < d_shadow_queue_counter)
     {
         Ray r;
-        r.origin.x = shadow_queue.ray_ori_x[queue_index];
-        r.origin.y = shadow_queue.ray_ori_y[queue_index];
-        r.origin.z = shadow_queue.ray_ori_z[queue_index];
-        r.direction.x = shadow_queue.ray_dir_x[queue_index];
-        r.direction.y = shadow_queue.ray_dir_y[queue_index];
-        r.direction.z = shadow_queue.ray_dir_z[queue_index];
+        r.origin.x = d_shadow_queue.ray_ori_x[queue_index];
+        r.origin.y = d_shadow_queue.ray_ori_y[queue_index];
+        r.origin.z = d_shadow_queue.ray_ori_z[queue_index];
+        r.direction.x = d_shadow_queue.ray_dir_x[queue_index];
+        r.direction.y = d_shadow_queue.ray_dir_y[queue_index];
+        r.direction.z = d_shadow_queue.ray_dir_z[queue_index];
 
-        float tmax = shadow_queue.ray_tmax[queue_index];
+        float tmax = d_shadow_queue.ray_tmax[queue_index];
         // 3. 遮挡测试 (Any Hit)
         bool occluded = false;
 
-        for (int i = 0; i < geomsSize; i++) {
+        for (int i = 0; i < geoms_size; i++) {
             float t = -1.0f;
-            const Geom& geom = c_geoms[i];
+            const Geom& geom = C_GEOMS[i];
             if (geom.type == CUBE) {
                 t = cubeIntersectionTest(geom, r);
             }
@@ -520,88 +553,46 @@ __global__ void traceShadowRay(ShadowQueue shadow_queue, int dev_shadow_queue_co
         }
         if (!occluded)
         {
-            int pixel_idx = shadow_queue.pixel_idx[queue_index];
+            int pixel_idx = d_shadow_queue.pixel_idx[queue_index];
             glm::vec3 radiance;
-            radiance.x = shadow_queue.radiance_x[queue_index];
-            radiance.y = shadow_queue.radiance_y[queue_index];
-            radiance.z = shadow_queue.radiance_z[queue_index];
+            radiance.x = d_shadow_queue.radiance_x[queue_index];
+            radiance.y = d_shadow_queue.radiance_y[queue_index];
+            radiance.z = d_shadow_queue.radiance_z[queue_index];
             // 累加到最终图像
-            image[pixel_idx] += radiance;
+            // todo：优化原子操作
+            AtomicAddVec3(&d_image[pixel_idx], radiance);
         }
     }
-
-}
-
-__device__ void SampleLight(
-    Geom* lights,
-    int num_lights,
-    unsigned int& seed,
-    glm::vec3& samplePoint,
-    glm::vec3& sampleNormal,
-    float& pdf_area,
-    int& light_idx)
-{
-    thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
-    float r = rand_float(seed);
-    int light_index = glm::min((int)(r * num_lights), num_lights - 1);
-    const Geom& selected_light = lights[light_index];
-    float pdf_selection = 1.0f / (float)num_lights;
-    float pdf_geom = 0.0f;
-    glm::vec2 r_sample;
-    r_sample.x = rand_float(seed);
-    r_sample.y = rand_float(seed);
-    // 根据几何体类型采样 
-    if (selected_light.type == PLANE)
-    {
-        samplePlane(selected_light, r_sample, samplePoint, sampleNormal, pdf_geom);
-    }
-    else if (selected_light.type == DISK)
-    {
-        sampleDisk(selected_light, r_sample, samplePoint, sampleNormal, pdf_geom);
-    }
-    else if (selected_light.type == SPHERE)
-    {
-        sampleSphere(selected_light, r_sample, samplePoint, sampleNormal, pdf_geom);
-    }
-
-    pdf_area = pdf_selection * pdf_geom;
-    light_idx = light_index;
 }
 
 
-__device__ float powerHeuristic(float f, float g) {
-    float f2 = f * f;
-    float g2 = g * g;
-    return f2 / (f2 + g2 + 1e-5f);
-}
-
-
-__device__ void computeNEE(
-    Geom* lights, int num_lights, Material* materials,
-    glm::vec3 intersectPoint, glm::vec3 N, glm::vec3 wo,
+// Compute Shadow Ray
+__device__ void ComputeNextEventEstimation(
+    Geom* d_lights, int num_lights, Material* d_materials,
+    glm::vec3 intersect_point, glm::vec3 N, glm::vec3 wo,
     Material material, unsigned int seed, glm::vec3 throughput, int pixel_idx,
-    ShadowQueue shadow_queue, int* shadow_queue_count)
+    ShadowQueue d_shadow_queue, int* d_shadow_queue_counter)
 {
     if (num_lights == 0 || material.Type == IDEAL_SPECULAR) return;
 
     // 采样准备
-    glm::vec3 lightSamplePos;
-    glm::vec3 lightN;
-    float pdfLightArea;
-    int lightIdx;
+    glm::vec3 light_sample_pos;
+    glm::vec3 light_N;
+    float pdf_light_area;
+    int light_idx;
 
     // A. 采样光源
-    SampleLight(lights, num_lights, seed, lightSamplePos, lightN, pdfLightArea, lightIdx);
+    SampleLight(d_lights, num_lights, seed, light_sample_pos, light_N, pdf_light_area, light_idx);
 
-    glm::vec3 wi = glm::normalize(lightSamplePos - intersectPoint);
-    float dist = glm::distance(lightSamplePos, intersectPoint);
+    glm::vec3 wi = glm::normalize(light_sample_pos - intersect_point);
+    float dist = glm::distance(light_sample_pos, intersect_point);
 
     float cosThetaSurf = glm::max(glm::dot(N, wi), 0.0f);
-    float cosThetaLight = glm::max(glm::dot(lightN, -wi), 0.0f);
+    float cosThetaLight = glm::max(glm::dot(light_N, -wi), 0.0f);
 
     // B. 检查几何有效性
-    if (cosThetaSurf > 0.0f && cosThetaLight > 0.0f && pdfLightArea > 0.0f) {
-        Material lightMat = materials[lights[lightIdx].materialid];
+    if (cosThetaSurf > 0.0f && cosThetaLight > 0.0f && pdf_light_area > 0.0f) {
+        Material lightMat = d_materials[d_lights[light_idx].materialid];
         glm::vec3 Le = lightMat.BaseColor * lightMat.emittance;
 
         // C. 使用通用函数计算 f 和 pdf
@@ -609,491 +600,511 @@ __device__ void computeNEE(
         float pdf = pdfBSDF(wo, wi, N, material);
 
         if (glm::length(f) > 0.0f) {
-            float pdfLightSolidAngle = pdfLightArea * (dist * dist) / cosThetaLight;
-            float weight = powerHeuristic(pdfLightSolidAngle, pdf);
+            float pdfLightSolidAngle = pdf_light_area * (dist * dist) / cosThetaLight;
+            float weight = PowerHeuristic(pdfLightSolidAngle, pdf);
             float G = (cosThetaSurf * cosThetaLight) / (dist * dist);
 
             // 计算潜在贡献
-            glm::vec3 L_potential = throughput * Le * f * G * weight / pdfLightArea;
+            glm::vec3 L_potential = throughput * Le * f * G * weight / pdf_light_area;
 
             // D. 写入 Shadow Queue
             if (glm::length(L_potential) > 0.0f) {
-                int shadow_idx = atomicAdd(shadow_queue_count, 1); // 简单版原子操作
+                int shadow_idx = DispatchPathIndex(d_shadow_queue_counter);
+                d_shadow_queue.ray_ori_x[shadow_idx] = intersect_point.x + N.x * EPSILON;
+                d_shadow_queue.ray_ori_y[shadow_idx] = intersect_point.y + N.y * EPSILON;
+                d_shadow_queue.ray_ori_z[shadow_idx] = intersect_point.z + N.z * EPSILON;
 
-                shadow_queue.ray_ori_x[shadow_idx] = intersectPoint.x + N.x * EPSILON;
-                shadow_queue.ray_ori_y[shadow_idx] = intersectPoint.y + N.y * EPSILON;
-                shadow_queue.ray_ori_z[shadow_idx] = intersectPoint.z + N.z * EPSILON;
+                d_shadow_queue.ray_dir_x[shadow_idx] = wi.x;
+                d_shadow_queue.ray_dir_y[shadow_idx] = wi.y;
+                d_shadow_queue.ray_dir_z[shadow_idx] = wi.z;
 
-                shadow_queue.ray_dir_x[shadow_idx] = wi.x;
-                shadow_queue.ray_dir_y[shadow_idx] = wi.y;
-                shadow_queue.ray_dir_z[shadow_idx] = wi.z;
+                d_shadow_queue.ray_tmax[shadow_idx] = dist - 2.0f * EPSILON;
 
-                shadow_queue.ray_tmax[shadow_idx] = dist - 2.0f * EPSILON;
+                d_shadow_queue.radiance_x[shadow_idx] = L_potential.x;
+                d_shadow_queue.radiance_y[shadow_idx] = L_potential.y;
+                d_shadow_queue.radiance_z[shadow_idx] = L_potential.z;
 
-                shadow_queue.radiance_x[shadow_idx] = L_potential.x;
-                shadow_queue.radiance_y[shadow_idx] = L_potential.y;
-                shadow_queue.radiance_z[shadow_idx] = L_potential.z;
-
-                shadow_queue.pixel_idx[shadow_idx] = pixel_idx;
+                d_shadow_queue.pixel_idx[shadow_idx] = pixel_idx;
             }
         }
     }
 }
 
-__device__ void updatePathState(
-    PathState path_state, int idx,
+__device__ void UpdatePathState(
+    PathState d_path_state, int idx,
+    int* d_extension_queue, int* d_extension_counter,
     int trace_depth, unsigned int seed,
     glm::vec3 throughput, glm::vec3 attenuation,
-    glm::vec3 intersectPoint, glm::vec3 N,
-    glm::vec3 nextDir, float nextPdf)
+    glm::vec3 intersect_point, glm::vec3 N,
+    glm::vec3 next_dir, float next_pdf)
 {
-    if (nextPdf > 0.0f && glm::length(attenuation) > 0.0f) {
-        // apply attenuation
+    if (next_pdf > 0.0f && glm::length(attenuation) > 0.0f) {
+        // directly apply attenuation (different from the paper)
         throughput *= attenuation;
 
-        // --- Russian Roulette ---
-        int current_depth = trace_depth - path_state.remaining_bounces[idx];
+        // common updates when path survives
+        d_path_state.throughput_x[idx] = throughput.x;
+        d_path_state.throughput_y[idx] = throughput.y;
+        d_path_state.throughput_z[idx] = throughput.z;
+
+        d_path_state.ray_ori_x[idx] = intersect_point.x + N.x * EPSILON;
+        d_path_state.ray_ori_y[idx] = intersect_point.y + N.y * EPSILON;
+        d_path_state.ray_ori_z[idx] = intersect_point.z + N.z * EPSILON;
+
+        d_path_state.ray_dir_x[idx] = next_dir.x;
+        d_path_state.ray_dir_y[idx] = next_dir.y;
+        d_path_state.ray_dir_z[idx] = next_dir.z;
+
+        d_path_state.remaining_bounces[idx]--;
+        d_path_state.last_pdf[idx] = next_pdf;
+
+        int ext_idx = DispatchPathIndex(d_extension_counter);
+        d_extension_queue[ext_idx] = idx;
+    }
+    // Save Seed
+    d_path_state.rng_state[idx] = seed;
+}
+
+
+__global__ void SamplePBRMaterialKernel(
+    int trace_depth,
+    PathState d_path_state,
+    int* d_pbr_queue,
+    int pbr_path_count,
+    ShadowQueue d_shadow_queue,
+    int* d_shadow_queue_counter,
+    int* d_extension_ray_queue,
+    int* d_extension_ray_counter,
+    Material* d_materials,
+    Geom* d_lights,
+    int* d_num_lights)
+{
+    int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+    if (queue_index < pbr_path_count) {
+        // 1. 读取对应光线
+        int idx = d_pbr_queue[queue_index];
+        // 2. 读取PathState，准备交互数据
+        float ray_t = d_path_state.ray_t[idx];
+        int hit_geom_id = d_path_state.hit_geom_id[idx];
+        int mat_id = d_path_state.material_id[idx];
+        int pixel_idx = d_path_state.pixel_idx[idx];
+
+        glm::vec3 ray_ori = glm::vec3(d_path_state.ray_ori_x[idx], d_path_state.ray_ori_y[idx], d_path_state.ray_ori_z[idx]);
+        glm::vec3 ray_dir = glm::vec3(d_path_state.ray_dir_x[idx], d_path_state.ray_dir_y[idx], d_path_state.ray_dir_z[idx]);
+        glm::vec3 throughput = glm::vec3(d_path_state.throughput_x[idx], d_path_state.throughput_y[idx], d_path_state.throughput_z[idx]);
+        glm::vec3 N = glm::vec3(d_path_state.hit_nor_x[idx], d_path_state.hit_nor_y[idx], d_path_state.hit_nor_z[idx]);
+
+        glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
+        glm::vec3 wo = -ray_dir;
+        Material material = d_materials[mat_id];
+
+        unsigned int local_seed = d_path_state.rng_state[idx];
+
+        // 3. NEE
+        ComputeNextEventEstimation(d_lights, *d_num_lights, d_materials,
+            intersect_point, N, wo, material, local_seed, throughput, pixel_idx,
+            d_shadow_queue, d_shadow_queue_counter);
+
+        // 4: BSDF Sampling (Scatter / Indirect)
+        glm::vec3 next_dir;
+        float next_pdf = 0.0f;
+        glm::vec3 attenuation(0.0f);
+
+        // samplePBR 返回 (fr * cos / pdf)
+        attenuation = samplePBR(wo, next_dir, next_pdf, N, material, local_seed);
+
+        // 5. 更新 Path State
+        UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed,
+            throughput, attenuation, intersect_point, N, next_dir, next_pdf);
+    }
+}
+
+__global__ void SampleDiffuseMaterialKernel(
+    int trace_depth,
+    PathState d_path_state,
+    int* d_diffuse_queue,
+    int diffuse_path_count,
+    ShadowQueue d_shadow_queue,
+    int* d_extension_ray_queue,
+    int* d_extension_ray_counter,
+    int* d_shadow_queue_counter,
+    Material* d_materials,
+    Geom* d_lights,
+    int* d_num_lights)
+{
+    int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+    if (queue_index < diffuse_path_count) {
+        // 1. 读取对应光线
+        int idx = d_diffuse_queue[queue_index];
+        // 2. 读取PathState，准备交互数据
+        float ray_t = d_path_state.ray_t[idx];
+        int hit_geom_id = d_path_state.hit_geom_id[idx];
+        int mat_id = d_path_state.material_id[idx];
+        int pixel_idx = d_path_state.pixel_idx[idx];
+
+        glm::vec3 ray_ori = glm::vec3(d_path_state.ray_ori_x[idx], d_path_state.ray_ori_y[idx], d_path_state.ray_ori_z[idx]);
+        glm::vec3 ray_dir = glm::vec3(d_path_state.ray_dir_x[idx], d_path_state.ray_dir_y[idx], d_path_state.ray_dir_z[idx]);
+        glm::vec3 throughput = glm::vec3(d_path_state.throughput_x[idx], d_path_state.throughput_y[idx], d_path_state.throughput_z[idx]);
+        glm::vec3 N = glm::vec3(d_path_state.hit_nor_x[idx], d_path_state.hit_nor_y[idx], d_path_state.hit_nor_z[idx]);
+
+        glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
+        glm::vec3 wo = -ray_dir;
+        Material material = d_materials[mat_id];
+
+        unsigned int local_seed = d_path_state.rng_state[idx];
+        // 3. generate shadow ray
+        ComputeNextEventEstimation(d_lights, *d_num_lights, d_materials,
+            intersect_point, N, wo, material, local_seed, throughput, pixel_idx,
+            d_shadow_queue, d_shadow_queue_counter);
+
+        // 4: Diffuse Sampling (Scatter / Indirect)
+        glm::vec3 next_dir;
+        float next_pdf = 0.0f;
+        glm::vec3 attenuation(0.0f);
+
+        // samplePBR 返回 (fr * cos / pdf)
+        attenuation = sampleDiffuse(wo, next_dir, next_pdf, N, material, local_seed);
+
+        // 5. 更新 Path State
+        UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed,
+            throughput, attenuation, intersect_point, N, next_dir, next_pdf);
+    }
+}
+
+__global__ void SampleSpecularMaterialKernel(
+    int trace_depth,
+    PathState d_path_state,
+    int* d_specular_queue,
+    int specular_path_count,
+    int* d_extension_ray_queue,
+    int* d_extension_ray_counter,
+    Material* d_materials)
+{
+    int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+    if (queue_index < specular_path_count) {
+        // 1. 读取对应光线
+        int idx = d_specular_queue[queue_index];
+        // 2. 读取PathState，准备交互数据
+        float ray_t = d_path_state.ray_t[idx];
+        int hit_geom_id = d_path_state.hit_geom_id[idx];
+        int mat_id = d_path_state.material_id[idx];
+
+        glm::vec3 ray_ori = glm::vec3(d_path_state.ray_ori_x[idx], d_path_state.ray_ori_y[idx], d_path_state.ray_ori_z[idx]);
+        glm::vec3 ray_dir = glm::vec3(d_path_state.ray_dir_x[idx], d_path_state.ray_dir_y[idx], d_path_state.ray_dir_z[idx]);
+        glm::vec3 throughput = glm::vec3(d_path_state.throughput_x[idx], d_path_state.throughput_y[idx], d_path_state.throughput_z[idx]);
+        glm::vec3 N = glm::vec3(d_path_state.hit_nor_x[idx], d_path_state.hit_nor_y[idx], d_path_state.hit_nor_z[idx]);
+
+        glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
+        glm::vec3 wo = -ray_dir;
+        Material material = d_materials[mat_id];
+
+        unsigned int local_seed = d_path_state.rng_state[idx];
+
+        // 3: specular Sampling (Scatter / Indirect)
+        glm::vec3 next_dir;
+        float next_pdf = 0.0f;
+        glm::vec3 attenuation(0.0f);
+
+        // samplePBR 返回 (fr * cos / pdf)
+        attenuation = sampleSpecular(wo, next_dir, next_pdf, N, material);
+
+        // 4. 更新 Path State
+        UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed,
+            throughput, attenuation, intersect_point, N, next_dir, next_pdf);
+    }
+}
+
+__global__ void PathLogicKernel(
+    int trace_depth,
+    int num_paths,
+    PathState d_path_state,
+    glm::vec3* d_image,
+    Material* d_materials,
+    Geom* d_lights,
+    int* d_num_lights,
+    int* d_pbr_queue, int* d_pbr_counter,
+    int* d_diffuse_queue, int* d_diffuse_counter,
+    int* d_specular_queue, int* d_specular_counter,
+    int* d_new_path_queue, int* d_new_path_counter,
+    ShadowQueue d_shadow_queue, int* d_shadow_queue_counter)
+{
+    int idx = (blockIdx.x * blockDim.x) + threadIdx.x;;
+    if (idx < num_paths)
+    {
+        // prepare data
+        int pixel_idx = d_path_state.pixel_idx[idx];
+        glm::vec3 throughput = glm::vec3(d_path_state.throughput_x[idx], d_path_state.throughput_y[idx], d_path_state.throughput_z[idx]);
+        bool terminated = false;
+
+        // 判断光线是否结束
+        int hit_geom_id = d_path_state.hit_geom_id[idx];
+        // Case 1: Miss或无反弹次数
+        if (hit_geom_id == -1 || d_path_state.remaining_bounces[idx] < 0) {
+            // 可选：累积环境光 (Environment Map)
+            // image[pixel_idx] += throughput * sampleEnvMap(ray_dir);
+            terminated = true;
+        }
+        // case 2：RR
+        int current_depth = trace_depth - d_path_state.remaining_bounces[idx];
         if (current_depth > RRDEPTH) {
-            float r_rr = rand_float(seed);
+            unsigned int local_seed = d_path_state.rng_state[idx];
+            float r_rr = rand_float(local_seed);
             float maxChan = glm::max(throughput.r, glm::max(throughput.g, throughput.b));
             maxChan = glm::clamp(maxChan, 0.0f, 1.0f);
 
             if (r_rr < maxChan) {
                 // survive, account for probability
                 throughput /= maxChan;
+                d_path_state.throughput_x[idx] = throughput.x;
+                d_path_state.throughput_y[idx] = throughput.y;
+                d_path_state.throughput_z[idx] = throughput.z;
+                d_path_state.rng_state[idx] = local_seed;
             }
             else {
                 // terminated by RR
-                path_state.remaining_bounces[idx] = -1;
-                path_state.rng_state[idx] = seed;
-                return;
+                terminated = true;
             }
         }
-
-        // common updates when path survives
-        path_state.throughput_x[idx] = throughput.x;
-        path_state.throughput_y[idx] = throughput.y;
-        path_state.throughput_z[idx] = throughput.z;
-
-        path_state.ray_ori_x[idx] = intersectPoint.x + N.x * EPSILON;
-        path_state.ray_ori_y[idx] = intersectPoint.y + N.y * EPSILON;
-        path_state.ray_ori_z[idx] = intersectPoint.z + N.z * EPSILON;
-
-        path_state.ray_dir_x[idx] = nextDir.x;
-        path_state.ray_dir_y[idx] = nextDir.y;
-        path_state.ray_dir_z[idx] = nextDir.z;
-
-        path_state.remaining_bounces[idx]--;
-        path_state.last_pdf[idx] = nextPdf;
-    }
-    // Save Seed
-    path_state.rng_state[idx] = seed;
-}
-
-
-__global__ void samplePBRMaterial(
-    int trace_depth,
-    PathState path_state,
-    int* pbr_queue,
-    int pbr_path_count,
-    ShadowQueue shadow_queue,
-    int* shadow_queue_count,
-    Material* materials,
-    Geom* lights,
-    int* num_lights)
-{
-    int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-    if (queue_index < pbr_path_count) {
-        // 1. 读取对应光线
-        int idx = pbr_queue[queue_index];
-        // 2. 读取PathState，准备交互数据
-        float ray_t = path_state.ray_t[idx];
-        int hit_geom_id = path_state.hit_geom_id[idx];
-        int mat_id = path_state.material_id[idx];
-        int pixel_idx = path_state.pixel_idx[idx];
-
-        glm::vec3 ray_ori = glm::vec3(path_state.ray_ori_x[idx], path_state.ray_ori_y[idx], path_state.ray_ori_z[idx]);
-        glm::vec3 ray_dir = glm::vec3(path_state.ray_dir_x[idx], path_state.ray_dir_y[idx], path_state.ray_dir_z[idx]);
-        glm::vec3 throughput = glm::vec3(path_state.throughput_x[idx], path_state.throughput_y[idx], path_state.throughput_z[idx]);
-        glm::vec3 N = glm::vec3(path_state.hit_nor_x[idx], path_state.hit_nor_y[idx], path_state.hit_nor_z[idx]);
-
-        glm::vec3 intersectPoint = ray_ori + ray_dir * ray_t;
-        glm::vec3 wo = -ray_dir;
-        Material material = materials[mat_id];
-
-        unsigned int local_seed = path_state.rng_state[idx];
-
-        // 3. NEE
-        computeNEE(lights, *num_lights, materials,
-            intersectPoint, N, wo, material, local_seed, throughput, pixel_idx,
-            shadow_queue, shadow_queue_count);
-
-        // 4: BSDF Sampling (Scatter / Indirect)
-        glm::vec3 nextDir;
-        float nextPdf = 0.0f;
-        glm::vec3 attenuation(0.0f);
-
-        // samplePBR 返回 (fr * cos / pdf)
-        attenuation = samplePBR(wo, nextDir, nextPdf, N, material, local_seed);
-
-        // 5. 更新 Path State
-        updatePathState(path_state, idx, trace_depth, local_seed,
-            throughput, attenuation, intersectPoint, N, nextDir, nextPdf);
-    }
-}
-
-__global__ void sampleDiffuseMaterial(
-    int trace_depth,
-    PathState path_state,
-    int* diffuse_queue,
-    int diffuse_path_count,
-    ShadowQueue shadow_queue,
-    int* shadow_queue_count,
-    Material* materials,
-    Geom* lights,
-    int* num_lights)
-{
-    int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-    if (queue_index < diffuse_path_count) {
-        // 1. 读取对应光线
-        int idx = diffuse_queue[queue_index];
-        // 2. 读取PathState，准备交互数据
-        float ray_t = path_state.ray_t[idx];
-        int hit_geom_id = path_state.hit_geom_id[idx];
-        int mat_id = path_state.material_id[idx];
-        int pixel_idx = path_state.pixel_idx[idx];
-
-        glm::vec3 ray_ori = glm::vec3(path_state.ray_ori_x[idx], path_state.ray_ori_y[idx], path_state.ray_ori_z[idx]);
-        glm::vec3 ray_dir = glm::vec3(path_state.ray_dir_x[idx], path_state.ray_dir_y[idx], path_state.ray_dir_z[idx]);
-        glm::vec3 throughput = glm::vec3(path_state.throughput_x[idx], path_state.throughput_y[idx], path_state.throughput_z[idx]);
-        glm::vec3 N = glm::vec3(path_state.hit_nor_x[idx], path_state.hit_nor_y[idx], path_state.hit_nor_z[idx]);
-
-        glm::vec3 intersectPoint = ray_ori + ray_dir * ray_t;
-        glm::vec3 wo = -ray_dir;
-        Material material = materials[mat_id];
-
-        unsigned int local_seed = path_state.rng_state[idx];
-        // 3. generate shadow ray
-        computeNEE(lights, *num_lights, materials,
-            intersectPoint, N, wo, material, local_seed, throughput, pixel_idx,
-            shadow_queue, shadow_queue_count);
-
-        // 4: Diffuse Sampling (Scatter / Indirect)
-        glm::vec3 nextDir;
-        float nextPdf = 0.0f;
-        glm::vec3 attenuation(0.0f);
-
-        // samplePBR 返回 (fr * cos / pdf)
-        attenuation = sampleDiffuse(wo, nextDir, nextPdf, N, material, local_seed);
-
-        // 5. 更新 Path State
-        updatePathState(path_state, idx, trace_depth, local_seed,
-            throughput, attenuation, intersectPoint, N, nextDir, nextPdf);
-    }
-}
-
-__global__ void sampleSpecularMaterial(
-    int trace_depth,
-    PathState path_state,
-    int* specular_queue,
-    int specular_path_count,
-    Material* materials)
-{
-    int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-    if (queue_index < specular_path_count) {
-        // 1. 读取对应光线
-        int idx = specular_queue[queue_index];
-        // 2. 读取PathState，准备交互数据
-        float ray_t = path_state.ray_t[idx];
-        int hit_geom_id = path_state.hit_geom_id[idx];
-        int mat_id = path_state.material_id[idx];
-
-        glm::vec3 ray_ori = glm::vec3(path_state.ray_ori_x[idx], path_state.ray_ori_y[idx], path_state.ray_ori_z[idx]);
-        glm::vec3 ray_dir = glm::vec3(path_state.ray_dir_x[idx], path_state.ray_dir_y[idx], path_state.ray_dir_z[idx]);
-        glm::vec3 throughput = glm::vec3(path_state.throughput_x[idx], path_state.throughput_y[idx], path_state.throughput_z[idx]);
-        glm::vec3 N = glm::vec3(path_state.hit_nor_x[idx], path_state.hit_nor_y[idx], path_state.hit_nor_z[idx]);
-
-        glm::vec3 intersectPoint = ray_ori + ray_dir * ray_t;
-        glm::vec3 wo = -ray_dir;
-        Material material = materials[mat_id];
-
-        unsigned int local_seed = path_state.rng_state[idx];
-
-        // 3: specular Sampling (Scatter / Indirect)
-        glm::vec3 nextDir;
-        float nextPdf = 0.0f;
-        glm::vec3 attenuation(0.0f);
-
-        // samplePBR 返回 (fr * cos / pdf)
-        attenuation = sampleSpecular(wo, nextDir, nextPdf, N, material);
-
-        // 4. 更新 Path State
-        updatePathState(path_state, idx, trace_depth, local_seed,
-            throughput, attenuation, intersectPoint, N, nextDir, nextPdf);
-    }
-}
-
-__global__ void logic(
-    int trace_depth,
-    int num_paths,
-    PathState path_state,
-    glm::vec3* image,
-    Material* materials,
-    Geom* lights,
-    int* num_lights,
-    int* pbr_queue, int* pbr_queue_count,
-    int* diffuse_queue, int* diffuse_queue_count,
-    int* specular_queue, int* specular_queue_count,
-    int* new_path_queue, int* new_path_queue_count)
-{
-    int idx = (blockIdx.x * blockDim.x) + threadIdx.x;
-    if (idx < num_paths)
-    {
-        int hit_geom_id = path_state.hit_geom_id[idx];
-        // 未命中物体或光线死亡（不需要检查throughput，因为throughput极低时无法通过RR）
-        if (hit_geom_id == -1 || path_state.remaining_bounces[idx] < 0.0f) {
-            path_state.remaining_bounces[idx] = -1;
-            // todo：优化添加逻辑，atomicAdd会导致serialize
-            int queue_idx = atomicAdd(new_path_queue_count, 1);
-            new_path_queue[queue_idx] = idx;
+        if (terminated)
+        {
+            int new_path_idx = DispatchPathIndex(d_new_path_counter);
+            d_new_path_queue[new_path_idx] = idx;
+            d_path_state.remaining_bounces[idx] = -1;
             return;
         }
-
-        // 命中光源
-        int mat_id = path_state.material_id[idx];
-        Material material = materials[mat_id];
-        if (materials[path_state.material_id[idx]].emittance > 0.0f)
+        else  // 存活状态的处理逻辑
         {
-            glm::vec3 N = glm::vec3(path_state.hit_nor_x[idx], path_state.hit_nor_y[idx], path_state.hit_nor_z[idx]);
-            glm::vec3 ray_dir = glm::vec3(path_state.ray_dir_x[idx], path_state.ray_dir_y[idx], path_state.ray_dir_z[idx]);
-            glm::vec3 wo = -ray_dir;
-            float misWeight = 1.0f;
-            if (path_state.remaining_bounces[idx] != trace_depth && *num_lights > 0)
+            // 命中光源
+            int mat_id = d_path_state.material_id[idx];
+            Material material = d_materials[mat_id];
+
+            if (d_materials[d_path_state.material_id[idx]].emittance > 0.0f)
             {
+                int queue_idx = DispatchPathIndex(d_new_path_counter);
+                d_new_path_queue[queue_idx] = idx;
 
-                bool prevWasSpecular = (path_state.last_pdf[idx] > (PDF_DIRAC_DELTA * 0.9f));
-                if (!prevWasSpecular) {
-                    float distToLight = path_state.ray_t[idx];
-                    float cosLight = glm::max(glm::dot(N, wo), 0.0f);
-                    float lightArea = c_geoms[hit_geom_id].surfaceArea;
+                glm::vec3 N = glm::vec3(d_path_state.hit_nor_x[idx], d_path_state.hit_nor_y[idx], d_path_state.hit_nor_z[idx]);
+                glm::vec3 ray_dir = glm::vec3(d_path_state.ray_dir_x[idx], d_path_state.ray_dir_y[idx], d_path_state.ray_dir_z[idx]);
+                glm::vec3 wo = -ray_dir;
+                float misWeight = 1.0f;
+                // // 只有当开启了 NEE (*num_lights > 0) 且不是第一次反弹时，才需要权衡 BSDF 和 Light 采样
+                if (d_path_state.remaining_bounces[idx] != trace_depth && *d_num_lights > 0)
+                {
 
-                    if (cosLight > EPSILON) {
-                        // 将 Area PDF 转换为 Solid Angle PDF
-                        float numLightsVal = (float)(*num_lights);
-                        float pdfLightArea = 1.0f / (numLightsVal * lightArea);
-                        float pdfLightSolidAngle = pdfLightArea * (distToLight * distToLight) / cosLight;
+                    bool prevWasSpecular = (d_path_state.last_pdf[idx] > (PDF_DIRAC_DELTA * 0.9f));
+                    if (!prevWasSpecular) {
+                        float distToLight = d_path_state.ray_t[idx];
+                        float cosLight = glm::max(glm::dot(N, wo), 0.0f);
+                        float lightArea = C_GEOMS[hit_geom_id].surfaceArea;
 
-                        float pdfBsdf = path_state.last_pdf[idx];
-                        misWeight = powerHeuristic(pdfBsdf, pdfLightSolidAngle);
-                    }
-                    else {
-                        misWeight = 0.0f; // 击中光源背面
+                        if (cosLight > EPSILON) {
+                            // 将 Area PDF 转换为 Solid Angle PDF
+                            float numLightsVal = (float)(*d_num_lights);
+                            float pdfLightArea = 1.0f / (numLightsVal * lightArea);
+                            float pdfLightSolidAngle = pdfLightArea * (distToLight * distToLight) / cosLight;
+
+                            float pdfBsdf = d_path_state.last_pdf[idx];
+                            misWeight = PowerHeuristic(pdfBsdf, pdfLightSolidAngle);
+                        }
+                        else {
+                            misWeight = 0.0f; // 击中光源背面
+                        }
                     }
                 }
+                AtomicAddVec3(&(d_image[pixel_idx]), (throughput * material.BaseColor * material.emittance * misWeight));
+                d_path_state.remaining_bounces[idx] = -1;
+                // 重新加入 new path 队列
+                int new_path_idx = DispatchPathIndex(d_new_path_counter);
+                d_new_path_queue[new_path_idx] = idx;
             }
-            glm::vec3 throughput = glm::vec3(
-                path_state.throughput_x[idx],
-                path_state.throughput_y[idx],
-                path_state.throughput_z[idx]
-            );
-            image[path_state.pixel_idx[idx]] += throughput * material.BaseColor * material.emittance * misWeight;
-            path_state.remaining_bounces[idx] = -1;
-            // todo：优化添加逻辑，atomicAdd会导致serialize
-            int queue_idx = atomicAdd(new_path_queue_count, 1);
-            new_path_queue[queue_idx] = idx;
-        }
-        // 命中普通物体
-        else
-        {
-            // todo：优化添加逻辑，atomicAdd会导致serialize
-            // 根据材质类型，将 idx 分发到不同的 Material Queue
-            if (material.Type == MicrofacetPBR) {
-                int queue_idx = atomicAdd(pbr_queue_count, 1);
-                pbr_queue[queue_idx] = idx;
-            }
-            else if (material.Type == IDEAL_DIFFUSE) {
-                int queue_idx = atomicAdd(diffuse_queue_count, 1);
-                diffuse_queue[queue_idx] = idx;
-            }
-            else if (material.Type == IDEAL_SPECULAR) {
-                int queue_idx = atomicAdd(specular_queue_count, 1);
-                specular_queue[queue_idx] = idx;
+            else // 命中普通物体
+            {
+                // 根据材质类型，将 idx 分发到不同的 Material Queue
+                if (material.Type == MicrofacetPBR) {
+                    int pbr_idx = DispatchPathIndex(d_pbr_counter);
+                    d_pbr_queue[pbr_idx] = idx;
+                }
+                if (material.Type == IDEAL_DIFFUSE) {
+                    int diffuse_idx = DispatchPathIndex(d_diffuse_counter);
+                    d_diffuse_queue[diffuse_idx] = idx;
+                }
+                if (material.Type == IDEAL_SPECULAR) {
+                    int specular_idx = DispatchPathIndex(d_specular_counter);
+                    d_specular_queue[specular_idx] = idx;
+                }
             }
         }
     }
 }
 
-
 /**
- * Wrapper for the __global__ call that sets up the kernel calls and does a ton
- * of memory management
- */
-void pathtrace(uchar4* pbo, int frame, int iter)
+ * Wrapper for the __global__ call that sets up the kernel calls and does a ton
+ * of memory management
+ */
+void Pathtrace(uchar4* pbo, int frame, int iter)
 {
-    const int traceDepth = hst_scene->state.traceDepth;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+
+    long long total_rays = 0;
+
+    const int trace_depth = hst_scene->state.traceDepth;
     const Camera& cam = hst_scene->state.camera;
-    const int pixelcount = cam.resolution.x * cam.resolution.y;
+    const int pixel_count = cam.resolution.x * cam.resolution.y;
 
-    // 2D block for generating ray from camera
-    const dim3 blockSize2d(8, 8);
-    const dim3 blocksPerGrid2d(
-        (cam.resolution.x + blockSize2d.x - 1) / blockSize2d.x,
-        (cam.resolution.y + blockSize2d.y - 1) / blockSize2d.y);
+    // update ImGui data container so UI shows current traced depth
+    if (hst_gui_data != NULL) {
+        hst_gui_data->TracedDepth = trace_depth;
+    }
 
-    // 1D block for path tracing
-    const int blockSize1d = 128;
+    // Block settings
+    const dim3 block_size_2d(8, 8);
+    const dim3 blocks_per_grid_2d(
+        (cam.resolution.x + block_size_2d.x - 1) / block_size_2d.x,
+        (cam.resolution.y + block_size_2d.y - 1) / block_size_2d.y);
+    const int block_size_1d = 128;
 
-    // iter=1时初始全局光线状态
+    int num_blocks_pool = (NUM_PATHS + block_size_1d - 1) / block_size_1d;
+
     if (iter == 1)
     {
-        generateRayFromCamera << <blocksPerGrid2d, blockSize2d >> > (cam, iter, hst_scene->state.traceDepth, path_state);
-        checkCUDAError("generate camera ray (iter 1)");
+        // 清空累积图像
+        cudaMemset(d_image, 0, pixel_count * sizeof(glm::vec3));
+        // 清空采样计数 (用于归一化颜色)
+        cudaMemset(d_pixel_sample_count, 0, pixel_count * sizeof(int));
+        // 重要：重置全局光线计数器，防止 int 溢出和索引错乱
+        // 假设 global_counter 是之前定义的 int*
+        cudaMemset(d_global_ray_counter, 0, sizeof(int));
+        InitPathPoolKernel << <num_blocks_pool, block_size_1d >> > (d_path_state, NUM_PATHS);
+        CHECK_CUDA_ERROR("InitPathPoolKernel");
     }
 
-    // --- PathSegment Tracing Stage ---
-    // Shoot ray into scene, bounce between objects, push shading chunks
-    for (int depth = 0; depth < hst_scene->state.traceDepth; depth++)
+    for (int step = 0; step < trace_depth; step++)
     {
-        // 1. 恢复光线
-        int num_dead_paths = 0;
-        cudaMemcpy(&num_dead_paths, dev_new_path_counter, sizeof(int), cudaMemcpyDeviceToHost);
-
-        if (num_dead_paths > 0) {
-            int num_regeneration_blocks = (num_dead_paths + blockSize1d - 1) / blockSize1d;
-
-            regenerateNewRay << <num_regeneration_blocks, blockSize1d >> > (
-                cam,
-                iter,
-                traceDepth,
-                path_state,
-                dev_new_path_queue,
-                num_dead_paths
-                );
-            checkCUDAError("regenerateNewRay");
-        }
-
-        // 2. ray cast
-        int numblocks = (NUM_PATHS + blockSize1d - 1) / blockSize1d;
-        traceExtensionRay << <numblocks, blockSize1d >> > (
+        // --- PathSegment Tracing Stage ---
+        // 1. Logic Kernel: 处理死掉的光线、生成新光线、累积颜色
+        cudaMemset(d_pbr_counter, 0, sizeof(int));
+        cudaMemset(d_diffuse_counter, 0, sizeof(int));
+        cudaMemset(d_specular_counter, 0, sizeof(int));
+        cudaMemset(d_new_path_counter, 0, sizeof(int));
+        PathLogicKernel << <num_blocks_pool, block_size_1d >> > (
+            trace_depth,
             NUM_PATHS,
-            hst_scene->geoms.size(),
-            path_state
+            d_path_state,
+            d_image,
+            d_materials,
+            d_light_sources,
+            d_num_lights,
+            d_pbr_queue, d_pbr_counter,
+            d_diffuse_queue, d_diffuse_counter,
+            d_specular_queue, d_specular_counter,
+            d_new_path_queue, d_new_path_counter,
+            d_shadow_queue, d_shadow_queue_counter
             );
-        checkCUDAError("traceExtensionRay");
+        CHECK_CUDA_ERROR("PathLogicKernel");
 
-        // 3. logic
-        // reset all counters
-        cudaMemset(dev_pbr_counter, 0, sizeof(int));
-        cudaMemset(dev_diffuse_counter, 0, sizeof(int));
-        cudaMemset(dev_specular_counter, 0, sizeof(int));
-        cudaMemset(dev_new_path_counter, 0, sizeof(int));
+        // 2. Material Kernels: 计算 BSDF 和散射
+        cudaMemset(d_shadow_queue_counter, 0, sizeof(int));
+        cudaMemset(d_extension_ray_counter, 0, sizeof(int));
 
-        logic << <numblocks, blockSize1d >> > (
-            traceDepth,
-            NUM_PATHS,
-            path_state,
-            dev_image,      
-            dev_materials,
-            dev_light_sources,
-            dev_num_lights,
-            dev_pbr_queue, dev_pbr_counter,
-            dev_diffuse_queue, dev_diffuse_counter,
-            dev_specular_queue, dev_specular_counter,
-            dev_new_path_queue, dev_new_path_counter
-            );
-        checkCUDAError("logic kernel");
-
-
-        // 4. Material Kernels
-        cudaMemset(dev_shadow_queue_counter, 0, sizeof(int));
-
-        // pbr
+        // --- PBR ---
         int num_pbr_paths = 0;
-        cudaMemcpy(&num_pbr_paths, dev_pbr_counter, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&num_pbr_paths, d_pbr_counter, sizeof(int), cudaMemcpyDeviceToHost);
         if (num_pbr_paths > 0) {
-            int blocks = (num_pbr_paths + blockSize1d - 1) / blockSize1d;
-            samplePBRMaterial << <blocks, blockSize1d >> > (
-                traceDepth,
-                path_state,
-                dev_pbr_queue,
-                num_pbr_paths,
-                shadow_queue,
-                dev_shadow_queue_counter,
-                dev_materials,
-                dev_light_sources,
-                dev_num_lights
+            int blocks = (num_pbr_paths + block_size_1d - 1) / block_size_1d;
+            SamplePBRMaterialKernel << <blocks, block_size_1d >> > (
+                trace_depth, d_path_state, d_pbr_queue, num_pbr_paths,
+                d_shadow_queue, d_shadow_queue_counter,
+                d_extension_ray_queue, d_extension_ray_counter,
+                d_materials, d_light_sources, d_num_lights
                 );
-            checkCUDAError("samplePBRMaterial");
+            CHECK_CUDA_ERROR("SamplePBRMaterialKernel");
         }
 
-        // diffuse
+        // --- Diffuse ---
         int num_diffuse_paths = 0;
-        cudaMemcpy(&num_diffuse_paths, dev_diffuse_counter, sizeof(int), cudaMemcpyDeviceToHost);
-
-
+        cudaMemcpy(&num_diffuse_paths, d_diffuse_counter, sizeof(int), cudaMemcpyDeviceToHost);
         if (num_diffuse_paths > 0) {
-            int blocks = (num_diffuse_paths + blockSize1d - 1) / blockSize1d;
-            sampleDiffuseMaterial << <blocks, blockSize1d >> > (
-                traceDepth,
-                path_state,
-                dev_diffuse_queue,
-                num_diffuse_paths,
-                shadow_queue,
-                dev_shadow_queue_counter,
-                dev_materials,
-                dev_light_sources,
-                dev_num_lights
-                );
-            checkCUDAError("sampleDiffuseMaterial");
+            int blocks = (num_diffuse_paths + block_size_1d - 1) / block_size_1d;
+            SampleDiffuseMaterialKernel << <blocks, block_size_1d >> > (
+                trace_depth, d_path_state, d_diffuse_queue, num_diffuse_paths,
+                d_shadow_queue, d_extension_ray_queue, d_extension_ray_counter,
+                d_shadow_queue_counter, d_materials, d_light_sources, d_num_lights);
+            CHECK_CUDA_ERROR("SampleDiffuseMaterialKernel");
         }
 
-        // specular
+        // --- Specular ---
         int num_specular_paths = 0;
-        cudaMemcpy(&num_specular_paths, dev_specular_counter, sizeof(int), cudaMemcpyDeviceToHost);
-
+        cudaMemcpy(&num_specular_paths, d_specular_counter, sizeof(int), cudaMemcpyDeviceToHost);
         if (num_specular_paths > 0) {
-            int blocks = (num_specular_paths + blockSize1d - 1) / blockSize1d;
-            sampleSpecularMaterial << <blocks, blockSize1d >> > (
-                traceDepth,
-                path_state,
-                dev_specular_queue,
-                num_specular_paths,
-                dev_materials
-                );
-            checkCUDAError("sampleSpecularMaterial");
+            int blocks = (num_specular_paths + block_size_1d - 1) / block_size_1d;
+            SampleSpecularMaterialKernel << <blocks, block_size_1d >> > (
+                trace_depth, d_path_state, d_specular_queue, num_specular_paths,
+                d_extension_ray_queue, d_extension_ray_counter, d_materials);
+            CHECK_CUDA_ERROR("SampleSpecularMaterialKernel");
         }
 
-        // 5. Shadow Ray Cast
+        // 3. Generate New Paths (Camera Rays)
+        int num_new_paths = 0;
+        cudaMemcpy(&num_new_paths, d_new_path_counter, sizeof(int), cudaMemcpyDeviceToHost);
+        if (num_new_paths > 0) {
+            int blocks = (num_new_paths + block_size_1d - 1) / block_size_1d;
+            GenerateCameraRaysKernel << <blocks, block_size_1d >> > (
+                cam, trace_depth, d_path_state,
+                d_new_path_queue, num_new_paths,
+                d_extension_ray_queue, d_extension_ray_counter,
+                d_global_ray_counter, pixel_count, d_pixel_sample_count);
+            CHECK_CUDA_ERROR("GenerateCameraRaysKernel");
+        }
+
+        // 4. Ray Casting (Shadow & Extension)
+        int num_extension_rays = 0;
         int num_shadow_rays = 0;
-        cudaMemcpy(&num_shadow_rays, dev_shadow_queue_counter, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&num_extension_rays, d_extension_ray_counter, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&num_shadow_rays, d_shadow_queue_counter, sizeof(int), cudaMemcpyDeviceToHost);
+
+        if (num_extension_rays > 0) {
+            int blocks = (num_extension_rays + block_size_1d - 1) / block_size_1d;
+            TraceExtensionRayKernel << <blocks, block_size_1d >> > (
+                d_extension_ray_queue, d_extension_ray_counter,
+                hst_scene->geoms.size(), d_path_state);
+        }
+
         if (num_shadow_rays > 0) {
-            int blocks = (num_shadow_rays + blockSize1d - 1) / blockSize1d;
-
-            traceShadowRay << <blocks, blockSize1d >> > (
-                shadow_queue,
-                num_shadow_rays,
-                dev_image,
-                hst_scene->geoms.size()
-                );
-            checkCUDAError("traceShadowRay");
+            int blocks = (num_shadow_rays + block_size_1d - 1) / block_size_1d;
+            TraceShadowRayKernel << <blocks, block_size_1d >> > (
+                d_shadow_queue, num_shadow_rays, d_image, hst_scene->geoms.size());
         }
+        CHECK_CUDA_ERROR("Ray Cast Stage");
 
-        if (guiData != NULL)
-        {
-            guiData->TracedDepth = depth;
-        }
-
-        // Send results to OpenGL buffer for rendering
-        sendImageToPBO << <blocksPerGrid2d, blockSize2d >> > (pbo, cam.resolution, iter, dev_image);
-
-        // Retrieve image from GPU
-        // 只在保存图片时有用，测试性能时不要开启
-        /*cudaMemcpy(hst_scene->state.image.data(), dev_image,
-            pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);*/
-
-        checkCUDAError("pathtrace");
+        total_rays += num_extension_rays;
+        total_rays += num_shadow_rays;
     }
+    // 所有Kernel执行完成才可以拷贝图像
+    cudaDeviceSynchronize();
+    SendImageToPBOKernel << <blocks_per_grid_2d, block_size_2d >> > (pbo, cam.resolution, iter, d_image, d_pixel_sample_count);
+    CHECK_CUDA_ERROR("SendImageToPBOKernel");
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+
+    float seconds = milliseconds / 1000.0f;
+    float mrays = total_rays / 1000000.0f; 
+    float mrays_per_sec = mrays / seconds;
+
+    if (hst_gui_data != NULL) {
+        // store as float for ImGui display
+        hst_gui_data->MraysPerSec = mrays_per_sec;
+    }
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
 }

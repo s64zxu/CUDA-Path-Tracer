@@ -113,17 +113,20 @@ void saveImage()
 
 void runCuda()
 {
+    // 1. 处理相机移动
     if (camchanged)
     {
-        iteration = 0;
+        iteration = 0; // 重置迭代计数，通知 pathtrace 清空缓存
         Camera& cam = renderState->camera;
+
+        // 更新相机坐标
         cameraPosition.x = zoom * sin(phi) * sin(theta);
         cameraPosition.y = zoom * cos(theta);
         cameraPosition.z = zoom * cos(phi) * sin(theta);
 
         cam.view = -glm::normalize(cameraPosition);
         glm::vec3 v = cam.view;
-        glm::vec3 u = glm::vec3(0, 1, 0);//glm::normalize(cam.up);
+        glm::vec3 u = glm::vec3(0, 1, 0);
         glm::vec3 r = glm::cross(v, u);
         cam.up = glm::cross(r, v);
         cam.right = r;
@@ -131,37 +134,37 @@ void runCuda()
         cam.position = cameraPosition;
         cameraPosition += cam.lookAt;
         cam.position = cameraPosition;
+
         camchanged = false;
     }
 
-    // Map OpenGL buffer object for writing from CUDA on a single GPU
-    // No data is moved (Win & Linux). When mapped to CUDA, OpenGL should not use this buffer
-
+    // 2. 初始化 (如果需要)
     if (iteration == 0)
     {
-        pathtraceFree();
-        pathtraceInit(scene);
+        PathtraceFree();
+        PathtraceInit(scene);
     }
 
+    // 3. 渲染循环
     if (iteration < renderState->iterations)
     {
         uchar4* pbo_dptr = NULL;
-        iteration++;
+        iteration++; // 第一次渲染时 iteration 变为 1
 
-        // Zero-Copy: map pbo to CUDA
+        // Map OpenGL PBO
         cudaGLMapBufferObject((void**)&pbo_dptr, pbo);
 
-        // execute the kernel
+        // 执行核心渲染逻辑
         int frame = 0;
-        pathtrace(pbo_dptr, frame, iteration);
+        Pathtrace(pbo_dptr, frame, iteration);
 
-        // unmap buffer object
+        // Unmap PBO
         cudaGLUnmapBufferObject(pbo);
     }
     else
     {
         saveImage();
-        pathtraceFree();
+        PathtraceFree();
         cudaDeviceReset();
         exit(EXIT_SUCCESS);
     }
