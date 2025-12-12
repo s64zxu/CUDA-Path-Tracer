@@ -78,11 +78,11 @@ void Scene::loadFromJSON(const std::string& jsonName)
         if (typeStr == "MicrofacetPBR") {
             newMaterial.Type = MicrofacetPBR;
         }
-        else if (typeStr == "IDEAL_SPECULAR") {
-            newMaterial.Type = IDEAL_SPECULAR;
+        else if (typeStr == "IDEAL_DIFFUSE") { 
+            newMaterial.Type = IDEAL_DIFFUSE; 
         }
-        else {
-            newMaterial.Type = MicrofacetPBR;
+        else if (typeStr == "IDEAL_SPECULAR") {
+            newMaterial.Type = IDEAL_SPECULAR; 
         }
 
         MatNameToID[name] = materials.size();
@@ -93,7 +93,7 @@ void Scene::loadFromJSON(const std::string& jsonName)
     const auto& objectsData = data["Objects"];
     for (const auto& p : objectsData)
     {
-        const auto& type = p["TYPE"];
+        const auto& type = p["Type"];
         Geom newGeom;
         if (type == "cube")
         {

@@ -16,7 +16,7 @@
 
 #include "sceneStructs.h"
 #include "image.h"
-#include "pathtrace.h"
+#include "pathtrace_wavefront.h"
 #include "utilities.h"
 #include "scene.h"
 

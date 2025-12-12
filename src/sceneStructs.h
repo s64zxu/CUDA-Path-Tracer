@@ -92,3 +92,38 @@ struct ShadeableIntersection
   int hitGeomId;
   int materialId; 
 };
+
+// Wavefront data struct
+struct PathState
+{
+    // ray info
+    float* ray_dir_x; float* ray_dir_y; float* ray_dir_z;
+    float* ray_ori_x; float* ray_ori_y; float* ray_ori_z;
+    
+    // intersection info
+    float* ray_t; // 光源采样：到光源的t 求交：初始为tmax，最终为到最近物体的t
+    int* hit_geom_id;
+    int* material_id;
+    float* hit_nor_x; float* hit_nor_y; float* hit_nor_z;
+
+    // path info
+    float* throughput_x; float* throughput_y; float* throughput_z;
+    int* pixel_idx;
+    float* last_pdf;
+    int* remaining_bounces;
+    unsigned int* rng_state; // 随机数状态
+};
+
+struct ShadowQueue
+{
+    // Geom Info
+    float* ray_ori_x; float* ray_ori_y; float* ray_ori_z;
+    float* ray_dir_x; float* ray_dir_y; float* ray_dir_z;
+    float* ray_tmax;  // 光源距离 (必须有，超过这个距离就不算遮挡)
+
+    // 能量载荷 (Payload)
+    // 这是 Material Kernel 算出来的 (Le * f * G / pdf * throughput)
+    // 如果没遮挡，就把它加到 pixel_idx 对应的像素上
+    float* radiance_x; float* radiance_y; float* radiance_z;
+    int* pixel_idx;  
+};

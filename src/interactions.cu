@@ -1,6 +1,7 @@
 #pragma once
 
 #include "interactions.h"
+#include "rng.h"
 
 __host__ __device__ glm::vec3 LocalToWorld(const glm::vec3& localDir, const glm::vec3& N) {
     glm::vec3 directionNotNormal;
@@ -177,17 +178,42 @@ __host__ __device__ float pdfSpecular(const glm::vec3& wo, const glm::vec3& wi, 
     return 0.0f;
 }
 
+// 通用 BSDF 评估 
+__device__ glm::vec3 evalBSDF(glm::vec3 wo, glm::vec3 wi, glm::vec3 N, Material m) {
+    if (m.Type == MicrofacetPBR) {
+        return evalPBR(wo, wi, N, m);
+    }
+    else if (m.Type == IDEAL_DIFFUSE) {
+        return evalDiffuse(m, N, wi);
+    }
+    else {
+        return glm::vec3(0.0f);
+    }
+}
+
+// 通用 PDF 评估 
+__device__ float pdfBSDF(glm::vec3 wo, glm::vec3 wi, glm::vec3 N, Material m) {
+    if (m.Type == MicrofacetPBR) {
+        return pdfPBR(wo, wi, N, m);
+    }
+    else if (m.Type == IDEAL_DIFFUSE) {
+        return pdfDiffuse(wi, N);
+    }
+    else {
+        return pdfSpecular(wo, wi, N);
+    }
+}
+
 // ========================================================================
 // 3. Sampling (BSDF 采样)
 // 输入: wo, N, 材质, 随机数
 // 输出: wi, pdf, throughput
 // ========================================================================
 __host__ __device__ glm::vec3 samplePBR(
-    const glm::vec3& wo, glm::vec3& wi, float& pdf, const glm::vec3& N, const Material& m, thrust::default_random_engine& rng)
+    const glm::vec3& wo, glm::vec3& wi, float& pdf, const glm::vec3& N, const Material& m, unsigned int& seed)
 {
-    thrust::uniform_real_distribution<float> u01(0, 1);
-    glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
-    float r_select = u01(rng);
+    glm::vec2 xi = glm::vec2(rand_float(seed), rand_float(seed));
+    float r_select = rand_float(seed);
 
     float roughness = glm::clamp(m.Roughness, 0.05f, 1.0f);
     float specProb = CalculateSpecularProbability(m, N, wo);
@@ -215,10 +241,9 @@ __host__ __device__ glm::vec3 samplePBR(
 }
 
 __host__ __device__ glm::vec3 sampleDiffuse(
-    const glm::vec3& wo, glm::vec3& wi, float& pdf, const glm::vec3& N, const Material& m, thrust::default_random_engine& rng)
+    const glm::vec3& wo, glm::vec3& wi, float& pdf, const glm::vec3& N, const Material& m, unsigned int& seed)
 {
-    thrust::uniform_real_distribution<float> u01(0, 1);
-    glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
+    glm::vec2 xi = glm::vec2(rand_float(seed), rand_float(seed));
     wi = CosineWeightedSampling(N, xi);
 
     // 确保采样方向有效

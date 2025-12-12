@@ -57,10 +57,12 @@ set(headers
     src/intersections.h
     src/glslUtility.hpp
     src/pathtrace.h
+    src/pathtrace_wavefront.h
     src/scene.h
     src/sceneStructs.h
     src/preview.h
     src/utilities.h
+    src/rng.h
 )
 
 set(sources
@@ -69,6 +71,7 @@ set(sources
     src/image.cpp
     src/glslUtility.cpp
     src/pathtrace.cu
+    src/pathtrace_wavefront.cu
     src/intersections.cu
     src/interactions.cu
     src/scene.cpp

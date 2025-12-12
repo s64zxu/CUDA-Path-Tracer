@@ -108,7 +108,7 @@ __host__ __device__ glm::vec3 samplePBR(
     float& pdf,
     const glm::vec3& N,
     const Material& m,
-    thrust::default_random_engine& rng);
+    unsigned int& seed);
 
 /**
  * 纯漫反射采样
@@ -119,7 +119,7 @@ __host__ __device__ glm::vec3 sampleDiffuse(
     float& pdf,
     const glm::vec3& N,
     const Material& m,
-    thrust::default_random_engine& rng);
+    unsigned int& seed);
 
 /**
  * 理想镜面反射采样 (Delta 分布)
@@ -131,6 +131,12 @@ __host__ __device__ glm::vec3 sampleSpecular(
     const glm::vec3& N,
     const Material& m);
 
+
+// 通用 BSDF 评估 
+__device__ glm::vec3 evalBSDF(glm::vec3 wo, glm::vec3 wi, glm::vec3 N, Material m);
+
+// 通用 PDF 评估 
+__device__ float pdfBSDF(glm::vec3 wo, glm::vec3 wi, glm::vec3 N, Material m);
 
 // ========================================================================
 // 4. Light Source Sampling (光源几何体采样)

@@ -1,56 +1,56 @@
 {
   "Materials": {
     "mat_white_diffuse": {
-      "TYPE": "IDEAL_DIFFUSE",
+      "Type": "MicrofacetPBR",
       "BaseColor": [ 0.85, 0.85, 0.85 ],
       "Metallic": 0.0,
       "Roughness": 1.0,
       "emittance": 0.0
     },
     "mat_red_diffuse": {
-      "TYPE": "IDEAL_DIFFUSE",
+      "Type": "MicrofacetPBR",
       "BaseColor": [ 0.8, 0.1, 0.1 ],
       "Metallic": 0.0,
       "Roughness": 1.0,
       "emittance": 0.0
     },
     "mat_mirror": {
-      "TYPE": "IDEAL_SPECULAR",
+      "Type": "MicrofacetPBR",
       "BaseColor": [ 1.0, 1.0, 1.0 ],
       "Metallic": 1.0,
       "Roughness": 0.0,
       "emittance": 0.0
     },
-    "mat_gold_pbr": {
-      "TYPE": "MicrofacetPBR",
+    "mat_gold_diffuse": {
+      "Type": "IDEAL_DIFFUSE",
       "BaseColor": [ 1.0, 0.76, 0.33 ],
       "Metallic": 1.0,
       "Roughness": 0.2,
       "emittance": 0.0
     },
-    "mat_plastic_blue_pbr": {
-      "TYPE": "MicrofacetPBR",
+    "mat_plastic_blue_mirror": {
+      "Type": "IDEAL_SPECULAR",
       "BaseColor": [ 0.1, 0.1, 0.9 ],
-      "Metallic": 0.0,
+      "Metallic": 1.0,
       "Roughness": 0.05,
       "emittance": 0.0
     },
     "mat_floor_pbr": {
-      "TYPE": "MicrofacetPBR",
+      "Type": "MicrofacetPBR",
       "BaseColor": [ 0.3, 0.3, 0.35 ],
       "Metallic": 0.0,
       "Roughness": 0.1,
       "emittance": 0.0
     },
     "mat_light_warm": {
-      "TYPE": "IDEAL_DIFFUSE",
+      "Type": "MicrofacetPBR",
       "BaseColor": [ 1.0, 0.9, 0.8 ],
       "Metallic": 0.0,
       "Roughness": 1.0,
       "emittance": 15.0
     },
     "mat_light_cool": {
-      "TYPE": "IDEAL_DIFFUSE",
+      "Type": "MicrofacetPBR",
       "BaseColor": [ 0.8, 0.9, 1.0 ],
       "Metallic": 0.0,
       "Roughness": 1.0,
@@ -70,35 +70,35 @@
   "Objects": [
     {
       "COMMENT": "=== ROOM SHELL ===",
-      "TYPE": "plane",
+      "Type": "plane",
       "MATERIAL": "mat_white_diffuse",
       "TRANS": [ 0.0, 0.0, 0.0 ],
       "ROTAT": [ -90.0, 0.0, 0.0 ],
       "SCALE": [ 20.0, 20.0, 1.0 ]
     },
     {
-      "TYPE": "plane",
+      "Type": "plane",
       "MATERIAL": "mat_white_diffuse",
       "TRANS": [ 0.0, 10.0, 0.0 ],
       "ROTAT": [ 90.0, 0.0, 0.0 ],
       "SCALE": [ 20.0, 20.0, 1.0 ]
     },
     {
-      "TYPE": "plane",
+      "Type": "plane",
       "MATERIAL": "mat_white_diffuse",
       "TRANS": [ 0.0, 5.0, -10.0 ],
       "ROTAT": [ 0.0, 0.0, 0.0 ],
       "SCALE": [ 20.0, 10.0, 1.0 ]
     },
     {
-      "TYPE": "plane",
+      "Type": "plane",
       "MATERIAL": "mat_red_diffuse",
       "TRANS": [ -10.0, 5.0, 0.0 ],
       "ROTAT": [ 0.0, 90.0, 0.0 ],
       "SCALE": [ 20.0, 10.0, 1.0 ]
     },
     {
-      "TYPE": "plane",
+      "Type": "plane",
       "MATERIAL": "mat_white_diffuse",
       "TRANS": [ 10.0, 5.0, 0.0 ],
       "ROTAT": [ 0.0, -90.0, 0.0 ],
@@ -106,7 +106,7 @@
     },
     {
       "COMMENT": "=== LIGHTS ===",
-      "TYPE": "disk",
+      "Type": "disk",
       "MATERIAL": "mat_light_warm",
       "TRANS": [ 0.0, 9.9, 0.0 ],
       "ROTAT": [ 90.0, 0.0, 0.0 ],
@@ -114,7 +114,7 @@
     },
     {
       "COMMENT": "Hidden Back Light for Rim Lighting",
-      "TYPE": "cube",
+      "Type": "cube",
       "MATERIAL": "mat_light_cool",
       "TRANS": [ 0.0, 1.0, -9.0 ],
       "ROTAT": [ 0.0, 0.0, 0.0 ],
@@ -122,7 +122,7 @@
     },
     {
       "COMMENT": "=== OBJECTS: LEFT - PERFECT MIRROR ===",
-      "TYPE": "cube",
+      "Type": "cube",
       "MATERIAL": "mat_mirror",
       "TRANS": [ -5.0, 2.5, 0.0 ],
       "ROTAT": [ 0.0, 20.0, 0.0 ],
@@ -130,23 +130,23 @@
     },
     {
       "COMMENT": "=== OBJECTS: CENTER - PBR GOLD ===",
-      "TYPE": "sphere",
-      "MATERIAL": "mat_gold_pbr",
+      "Type": "sphere",
+      "MATERIAL": "mat_gold_diffuse",
       "TRANS": [ 0.0, 2.5, 3.0 ],
       "ROTAT": [ 0.0, 0.0, 0.0 ],
       "SCALE": [ 2.5, 2.5, 2.5 ]
     },
     {
       "COMMENT": "=== OBJECTS: RIGHT - PBR PLASTIC ===",
-      "TYPE": "cube",
-      "MATERIAL": "mat_plastic_blue_pbr",
+      "Type": "cube",
+      "MATERIAL": "mat_plastic_blue_mirror",
       "TRANS": [ 5.0, 2.5, 0.0 ],
       "ROTAT": [ 0.0, -20.0, 0.0 ],
       "SCALE": [ 4.0, 5.0, 4.0 ]
     },
     {
       "COMMENT": "=== OBJECTS: FLOOR DETAIL - DIFFUSE CUBE ===",
-      "TYPE": "cube",
+      "Type": "cube",
       "MATERIAL": "mat_white_diffuse",
       "TRANS": [ 2.0, 0.75, 6.0 ],
       "ROTAT": [ 0.0, 45.0, 0.0 ],
