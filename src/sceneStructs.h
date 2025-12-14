@@ -7,13 +7,6 @@
 
 #define BACKGROUND_COLOR (glm::vec3(0.0f))
 
-enum GeomType
-{
-    SPHERE,
-    CUBE,
-    PLANE,
-    DISK
-};
 
 enum MaterialType
 {
@@ -22,18 +15,6 @@ enum MaterialType
     IDEAL_SPECULAR
 };
 
-struct Geom
-{
-    enum GeomType type;
-    int materialid;
-    float surfaceArea; // precomputed area
-    glm::vec3 translation;
-    glm::vec3 rotation;
-    glm::vec3 scale;
-    glm::mat4 transform;
-    glm::mat4 inverseTransform;
-    glm::mat4 invTranspose;
-};
 
 
 struct Ray
@@ -122,8 +103,17 @@ struct ShadowQueue
     float* ray_tmax;  // 光源距离 (必须有，超过这个距离就不算遮挡)
 
     // 能量载荷 (Payload)
-    // 这是 Material Kernel 算出来的 (Le * f * G / pdf * throughput)
-    // 如果没遮挡，就把它加到 pixel_idx 对应的像素上
     float* radiance_x; float* radiance_y; float* radiance_z;
     int* pixel_idx;  
+};
+
+struct MeshData{
+    float* pos_x;float* pos_y;float* pos_z;
+    float* nor_x;float* nor_y;float* nor_z;
+    float* uv_u;float* uv_v;
+    int* idx_v0;int* idx_v1;int* idx_v2; // 三角形对应的三个顶点的索引
+    int* mat_id;
+    // 计数器
+    int numVertices;
+    int numTriangles;
 };

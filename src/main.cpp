@@ -31,6 +31,9 @@ int height;
 //-------------MAIN--------------
 //-------------------------------
 
+//using namespace pathtrace;
+using namespace pathtrace_wavefront;
+
 int main(int argc, char** argv)
 {
     startTimeString = currentTimeString();
@@ -113,6 +116,7 @@ void saveImage()
 
 void runCuda()
 {
+
     // 1. 处理相机移动
     if (camchanged)
     {

@@ -2,7 +2,7 @@
 
 #include "intersections.h" 
 #include <glm/glm.hpp>
-#include <thrust/random.h>
+#include "cuda_utilities.h"
 
 // ========================================================================
 // 辅助数学工具 (Helper Math)
@@ -138,43 +138,12 @@ __device__ glm::vec3 evalBSDF(glm::vec3 wo, glm::vec3 wi, glm::vec3 N, Material 
 // 通用 PDF 评估 
 __device__ float pdfBSDF(glm::vec3 wo, glm::vec3 wi, glm::vec3 N, Material m);
 
-// ========================================================================
-// 4. Light Source Sampling (光源几何体采样)
-// ========================================================================
-
-/**
- * 球体光源采样
- */
-__host__ __device__ void sampleSphere(
-    const Geom& sphere,
-    const glm::vec2& r_sample,
-    glm::vec3& samplePoint,
-    glm::vec3& normal,
-    float& pdf);
-
-/**
- * 平面光源采样 (Quad)
- */
-__host__ __device__ void samplePlane(
-    const Geom& plane,
-    const glm::vec2& r_sample,
-    glm::vec3& samplePoint,
-    glm::vec3& normal,
-    float& pdf);
-
-/**
- * 圆盘光源采样
- */
-__host__ __device__ void sampleDisk(
-    const Geom& disk,
-    glm::vec2 r_sample,
-    glm::vec3& samplePoint,
-    glm::vec3& normal,
-    float& pdf);
-
 __host__ __device__ void SampleLight(
-    Geom* d_lights,
+    const MeshData& mesh_data,
+    const int* light_tri_idx,
+    const float* light_cdf,
     int num_lights,
+    float total_light_area,
     unsigned int& seed,
     glm::vec3& sample_point,
     glm::vec3& sample_normal,

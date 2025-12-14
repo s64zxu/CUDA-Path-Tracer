@@ -21,3 +21,20 @@ __device__ __forceinline__ float PowerHeuristic(float f, float g) {
     float g2 = g * g;
     return f2 / (f2 + g2 + 1e-5f);
 }
+
+__host__ __device__ __forceinline__ int BinarySearch(const float* cdf, int count, float value) {
+    int left = 0;
+    int right = count - 1;
+
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        if (cdf[mid] < value) {
+            left = mid + 1;
+        }
+        else {
+            right = mid - 1;
+        }
+    }
+    // ±ß½ç±£»¤
+    return glm::min(left, count - 1);
+}

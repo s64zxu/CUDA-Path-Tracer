@@ -1,156 +1,29 @@
 {
   "Materials": {
-    "mat_white_diffuse": {
-      "Type": "MicrofacetPBR",
-      "BaseColor": [ 0.85, 0.85, 0.85 ],
-      "Metallic": 0.0,
-      "Roughness": 1.0,
-      "emittance": 0.0
-    },
-    "mat_red_diffuse": {
-      "Type": "MicrofacetPBR",
-      "BaseColor": [ 0.8, 0.1, 0.1 ],
-      "Metallic": 0.0,
-      "Roughness": 1.0,
-      "emittance": 0.0
-    },
-    "mat_mirror": {
-      "Type": "MicrofacetPBR",
-      "BaseColor": [ 1.0, 1.0, 1.0 ],
-      "Metallic": 1.0,
-      "Roughness": 0.0,
-      "emittance": 0.0
-    },
-    "mat_gold_diffuse": {
-      "Type": "IDEAL_DIFFUSE",
-      "BaseColor": [ 1.0, 0.76, 0.33 ],
-      "Metallic": 1.0,
-      "Roughness": 0.2,
-      "emittance": 0.0
-    },
-    "mat_plastic_blue_mirror": {
+    "mirror": {
       "Type": "IDEAL_SPECULAR",
-      "BaseColor": [ 0.1, 0.1, 0.9 ],
-      "Metallic": 1.0,
-      "Roughness": 0.05,
-      "emittance": 0.0
-    },
-    "mat_floor_pbr": {
-      "Type": "MicrofacetPBR",
-      "BaseColor": [ 0.3, 0.3, 0.35 ],
-      "Metallic": 0.0,
-      "Roughness": 0.1,
-      "emittance": 0.0
-    },
-    "mat_light_warm": {
-      "Type": "MicrofacetPBR",
-      "BaseColor": [ 1.0, 0.9, 0.8 ],
-      "Metallic": 0.0,
-      "Roughness": 1.0,
-      "emittance": 15.0
-    },
-    "mat_light_cool": {
-      "Type": "MicrofacetPBR",
-      "BaseColor": [ 0.8, 0.9, 1.0 ],
-      "Metallic": 0.0,
-      "Roughness": 1.0,
-      "emittance": 8.0
+      "BaseColor": [ 1.0, 1.0, 1.0 ],
+      "Roughness": 0.0,
+      "Metallic": 1.0
     }
-  },
-  "Camera": {
-    "RES": [ 800, 600 ],
-    "FOVY": 40.0,
-    "ITERATIONS": 2000,
-    "DEPTH": 5,
-    "FILE": "material_gallery",
-    "EYE": [ 0.0, 5.0, 15.0 ],
-    "LOOKAT": [ 0.0, 2.5, 0.0 ],
-    "UP": [ 0.0, 1.0, 0.0 ]
   },
   "Objects": [
     {
-      "COMMENT": "=== ROOM SHELL ===",
-      "Type": "plane",
-      "MATERIAL": "mat_white_diffuse",
-      "TRANS": [ 0.0, 0.0, 0.0 ],
-      "ROTAT": [ -90.0, 0.0, 0.0 ],
-      "SCALE": [ 20.0, 20.0, 1.0 ]
-    },
-    {
-      "Type": "plane",
-      "MATERIAL": "mat_white_diffuse",
-      "TRANS": [ 0.0, 10.0, 0.0 ],
-      "ROTAT": [ 90.0, 0.0, 0.0 ],
-      "SCALE": [ 20.0, 20.0, 1.0 ]
-    },
-    {
-      "Type": "plane",
-      "MATERIAL": "mat_white_diffuse",
-      "TRANS": [ 0.0, 5.0, -10.0 ],
-      "ROTAT": [ 0.0, 0.0, 0.0 ],
-      "SCALE": [ 20.0, 10.0, 1.0 ]
-    },
-    {
-      "Type": "plane",
-      "MATERIAL": "mat_red_diffuse",
-      "TRANS": [ -10.0, 5.0, 0.0 ],
-      "ROTAT": [ 0.0, 90.0, 0.0 ],
-      "SCALE": [ 20.0, 10.0, 1.0 ]
-    },
-    {
-      "Type": "plane",
-      "MATERIAL": "mat_white_diffuse",
-      "TRANS": [ 10.0, 5.0, 0.0 ],
-      "ROTAT": [ 0.0, -90.0, 0.0 ],
-      "SCALE": [ 20.0, 10.0, 1.0 ]
-    },
-    {
-      "COMMENT": "=== LIGHTS ===",
-      "Type": "disk",
-      "MATERIAL": "mat_light_warm",
-      "TRANS": [ 0.0, 9.9, 0.0 ],
-      "ROTAT": [ 90.0, 0.0, 0.0 ],
-      "SCALE": [ 5.0, 5.0, 1.0 ]
-    },
-    {
-      "COMMENT": "Hidden Back Light for Rim Lighting",
-      "Type": "cube",
-      "MATERIAL": "mat_light_cool",
-      "TRANS": [ 0.0, 1.0, -9.0 ],
-      "ROTAT": [ 0.0, 0.0, 0.0 ],
-      "SCALE": [ 10.0, 2.0, 0.5 ]
-    },
-    {
-      "COMMENT": "=== OBJECTS: LEFT - PERFECT MIRROR ===",
-      "Type": "cube",
-      "MATERIAL": "mat_mirror",
-      "TRANS": [ -5.0, 2.5, 0.0 ],
-      "ROTAT": [ 0.0, 20.0, 0.0 ],
-      "SCALE": [ 4.0, 5.0, 4.0 ]
-    },
-    {
-      "COMMENT": "=== OBJECTS: CENTER - PBR GOLD ===",
-      "Type": "sphere",
-      "MATERIAL": "mat_gold_diffuse",
-      "TRANS": [ 0.0, 2.5, 3.0 ],
-      "ROTAT": [ 0.0, 0.0, 0.0 ],
-      "SCALE": [ 2.5, 2.5, 2.5 ]
-    },
-    {
-      "COMMENT": "=== OBJECTS: RIGHT - PBR PLASTIC ===",
-      "Type": "cube",
-      "MATERIAL": "mat_plastic_blue_mirror",
-      "TRANS": [ 5.0, 2.5, 0.0 ],
-      "ROTAT": [ 0.0, -20.0, 0.0 ],
-      "SCALE": [ 4.0, 5.0, 4.0 ]
-    },
-    {
-      "COMMENT": "=== OBJECTS: FLOOR DETAIL - DIFFUSE CUBE ===",
-      "Type": "cube",
-      "MATERIAL": "mat_white_diffuse",
-      "TRANS": [ 2.0, 0.75, 6.0 ],
-      "ROTAT": [ 0.0, 45.0, 0.0 ],
-      "SCALE": [ 1.5, 1.5, 1.5 ]
+      "FILE": "../scenes/cornell.obj",
+      "MATERIAL": "none",
+      "TRANS": [ 0, 0, 0 ],
+      "ROTAT": [ 0, 0, 0 ],
+      "SCALE": [ 1, 1, 1 ]
     }
-  ]
+  ],
+  "Camera": {
+    "RES": [ 800, 800 ],
+    "FOVY": 27.8,
+    "ITERATIONS": 5000,
+    "DEPTH": 8,
+    "FILE": "cornell_bunny_mirror.png",
+    "EYE": [ 278, 273, -800 ],
+    "LOOKAT": [ 278, 273, 0 ],
+    "UP": [ 0, 1, 0 ]
+  }
 }

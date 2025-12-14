@@ -64,6 +64,7 @@ set(headers
     src/utilities.h
     src/cuda_utilities.h
     src/rng.h
+    src/tiny_obj_loader.h
 )
 
 set(sources

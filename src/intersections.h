@@ -37,28 +37,9 @@ __host__ __device__ inline glm::vec3 multiplyMV(glm::mat4 m, glm::vec4 v)
 {
     return glm::vec3(m * v);
 }
-
-
-// the cube ranges from -0.5 to 0.5 in each axis and is centered at the origin.
-__host__ __device__ float cubeIntersectionTest(
-    Geom box,
-    Ray r);
-// the sphere always has radius 0.5 and is centered at the origin.
-__host__ __device__ float sphereIntersectionTest(
-    Geom sphere,
-    Ray r);
-// 中心在原点，范围是从 [-0.5, -0.5] 到 [0.5, 0.5]。
-__device__ float planeIntersectionTest(
-    const Geom& plane,
-    const Ray& r);
-// 中心在原点，半径为 0.5
-__device__ float diskIntersectionTest(
-    const Geom& plane,
-    const Ray& r);
-
-__device__ glm::vec3 cubeGetNormal(const Geom& box, const Ray& worldRay, float worldT);
-__device__ glm::vec3 sphereGetNormal(const Geom& sphere, const Ray& worldRay, float worldT);
-__device__ glm::vec3 planeGetNormal(const Geom& plane, const Ray& worldRay, float worldT);
-__device__ glm::vec3 diskGetNormal(const Geom& disk, const Ray& worldRay, float worldT);
-
-
+__host__ __device__ float triangleIntersectionTest(
+    const glm::vec3& v0,
+    const glm::vec3& v1,
+    const glm::vec3& v2,
+    const Ray& r,
+    float& out_u, float& out_v);

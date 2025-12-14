@@ -275,132 +275,39 @@ __host__ __device__ glm::vec3 sampleSpecular(
     return Fr;
 }
 
-__host__ __device__ void sampleSphere(
-    const Geom& sphere,
-    const glm::vec2& r_sample,
-    glm::vec3& samplePoint,
-    glm::vec3& normal,
-    float& pdf)
-{
-    // 1. 生成单位球表面的点 (半径 1.0)
-    float z = 1.0f - 2.0f * r_sample.x;
-    float r = sqrt(glm::max(0.0f, 1.0f - z * z));
-    float phi = 2.0f * PI * r_sample.y;
-
-    glm::vec3 unitPoint(r * cos(phi), r * sin(phi), z);
-
-    // 2. 0.5 以匹配 Intersection Logic
-    glm::vec3 localPoint = unitPoint * 0.5f;
-
-    // 法线依然是单位球方向
-    glm::vec3 localNormal = unitPoint;
-
-    // 3. 变换到世界空间
-    samplePoint = glm::vec3(sphere.transform * glm::vec4(localPoint, 1.0f));
-    normal = glm::normalize(glm::vec3(sphere.invTranspose * glm::vec4(localNormal, 0.0f)));
-
-    // 4. 计算面积
-    // 物理半径 R = 0.5 * scale.x
-    // Area = 4 * PI * R^2 = 4 * PI * (0.25 * scale^2) = PI * scale^2
-    float currentRadius = sphere.scale.x;
-    float area = PI * currentRadius * currentRadius;
-
-    if (area > 0.0f)
-        pdf = 1.0f / area;
-    else
-        pdf = 0.0f;
-}
-
-__host__ __device__ void samplePlane(
-    const Geom& plane,
-    const glm::vec2& r_sample,
-    glm::vec3& samplePoint,
-    glm::vec3& normal,
-    float& pdf)
-{
-    glm::vec3 localPoint(r_sample.x - 0.5f, r_sample.y - 0.5f, 0);
-    glm::vec3 localNormal(0, 0, 1.0f);
-
-    samplePoint = glm::vec3(plane.transform * glm::vec4(localPoint, 1.0f));
-    normal = glm::normalize(glm::vec3(plane.invTranspose * glm::vec4(localNormal, 0.0f)));
-
-    float area = plane.scale.x * plane.scale.y;
-    if (area > 0.0f) {
-        pdf = 1.0f / area;
-    }
-    else {
-        pdf = 0.0f;
-    }
-}
-
-__host__ __device__ void sampleDisk(
-    const Geom& disk,
-    glm::vec2 r_sample, 
-    glm::vec3& samplePoint,
-    glm::vec3& normal,
-    float& pdf)
-{
-    // 1. 局部空间采样 (Local Sampling)
-    float r = sqrt(r_sample.x);
-    float theta = 2.0f * PI * r_sample.y;
-
-    // 物体在 [-0.5, 0.5] 的包围盒内
-    float local_r = r * 0.5f;
-
-    glm::vec3 localPoint(local_r * cos(theta), local_r * sin(theta), 0.0f);
-    glm::vec3 localNormal(0.0f, 0.0f, 1.0f);
-
-    // 2. 变换到世界空间 (World Space Transform)
-    samplePoint = glm::vec3(disk.transform * glm::vec4(localPoint, 1.0f));
-
-    // 法线必须使用 Inverse Transpose 变换并归一化
-    normal = glm::normalize(glm::vec3(disk.invTranspose * glm::vec4(localNormal, 0.0f)));
-
-    // 3. 计算 PDF (1 / Area)
-
-    float currentScale = disk.scale.x;
-    float area = PI * 0.25f * currentScale * currentScale;
-
-    if (area > 0.0f) {
-        pdf = 1.0f / area;
-    }
-    else {
-        pdf = 0.0f;
-    }
-}
-
 __host__ __device__ void SampleLight(
-    Geom* d_lights,
+    const MeshData& mesh_data,
+    const int* light_tri_idx,
+    const float* light_cdf,
     int num_lights,
+    float total_light_area,
     unsigned int& seed,
     glm::vec3& sample_point,
     glm::vec3& sample_normal,
     float& pdf_area,
     int& light_idx)
 {
-    thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
-    float r = rand_float(seed);
-    int light_index = glm::min((int)(r * num_lights), num_lights - 1);
-    const Geom& selected_light = d_lights[light_index];
-    float pdf_selection = 1.0f / (float)num_lights;
-    float pdf_geom = 0.0f;
-    glm::vec2 r_sample;
-    r_sample.x = rand_float(seed);
-    r_sample.y = rand_float(seed);
-    // 根据几何体类型采样 
-    if (selected_light.type == PLANE)
-    {
-        samplePlane(selected_light, r_sample, sample_point, sample_normal, pdf_geom);
-    }
-    else if (selected_light.type == DISK)
-    {
-        sampleDisk(selected_light, r_sample, sample_point, sample_normal, pdf_geom);
-    }
-    else if (selected_light.type == SPHERE)
-    {
-        sampleSphere(selected_light, r_sample, sample_point, sample_normal, pdf_geom);
-    }
+    float r1 = rand_float(seed);// 用于选三角形
+    float r2 = rand_float(seed);// 用于三角形内重心坐标 u
+    float r3 = rand_float(seed);// 用于三角形内重心坐标 v
 
-    pdf_area = pdf_selection * pdf_geom;
-    light_idx = light_index;
+    int cdf_index = BinarySearch(light_cdf, num_lights, r1);
+	int tri_index = light_tri_idx[cdf_index];
+
+    int idx0 = mesh_data.idx_v0[tri_index];
+    int idx1 = mesh_data.idx_v1[tri_index];
+    int idx2 = mesh_data.idx_v2[tri_index];
+
+    glm::vec3 p0(mesh_data.pos_x[idx0], mesh_data.pos_y[idx0], mesh_data.pos_z[idx0]);
+    glm::vec3 p1(mesh_data.pos_x[idx1], mesh_data.pos_y[idx1], mesh_data.pos_z[idx1]);
+    glm::vec3 p2(mesh_data.pos_x[idx2], mesh_data.pos_y[idx2], mesh_data.pos_z[idx2]);
+
+    // 三角形重心坐标随机采样
+    float sqrt_r2 = sqrt(r2);
+    float b_u = 1.0f - sqrt_r2;
+    float b_v = r3 * sqrt_r2;
+	sample_point = p0 * b_u + p1 * b_v + p2 * (1.0f - b_u - b_v);
+    sample_normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+    pdf_area = 1.0f / total_light_area;
+	light_idx = tri_index;
 }
