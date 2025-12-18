@@ -97,12 +97,12 @@ void Scene::loadMaterials(const json& materialsData, std::unordered_map<std::str
         const auto& name = item.key();
         const auto& p = item.value();
         Material newMaterial{};
-        if (p.contains("BaseColor")) {
-            const auto& col = p["BaseColor"];
-            newMaterial.BaseColor = glm::vec3(col[0], col[1], col[2]);
+        if (p.contains("basecolor")) {
+            const auto& col = p["basecolor"];
+            newMaterial.basecolor = glm::vec3(col[0], col[1], col[2]);
         }
-        newMaterial.Metallic = p.value("Metallic", 0.0f);
-        newMaterial.Roughness = p.value("Roughness", 0.5f);
+        newMaterial.metallic = p.value("metallic", 0.0f);
+        newMaterial.roughness = p.value("roughness", 0.5f);
         newMaterial.emittance = p.value("emittance", 0.0f);
         std::string typeStr = p.value("Type", "MicrofacetPBR");
 
@@ -176,7 +176,7 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                 // Case 2: 没强制指定，且有 MTL -> 加载 MTL 到全局材质库
                 for (const auto& tMat : tinyMaterials) {
                     Material newMat{};
-                    newMat.BaseColor = glm::vec3(tMat.diffuse[0], tMat.diffuse[1], tMat.diffuse[2]);
+                    newMat.basecolor = glm::vec3(tMat.diffuse[0], tMat.diffuse[1], tMat.diffuse[2]);
 
                     // Emission 处理
                     glm::vec3 emission = glm::vec3(tMat.emission[0], tMat.emission[1], tMat.emission[2]);
@@ -186,20 +186,20 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                     }
                     if (glm::length(emission) > 0.001f) {
                         newMat.emittance = glm::length(emission);
-                        newMat.BaseColor = emission;
+                        newMat.basecolor = emission;
                     }
 
                     // PBR 转换逻辑
-                    if (tMat.shininess >= 0) newMat.Roughness = 1.0f - std::min(1.0f, tMat.shininess / 1000.0f);
+                    if (tMat.shininess >= 0) newMat.roughness = 1.0f - std::min(1.0f, tMat.shininess / 1000.0f);
 
                     float specAvg = (tMat.specular[0] + tMat.specular[1] + tMat.specular[2]) / 3.0f;
-                    newMat.Metallic = (specAvg > 0.1f) ? 1.0f : 0.0f;
+                    newMat.metallic = (specAvg > 0.1f) ? 1.0f : 0.0f;
 
-                    if ((newMat.Metallic > 0.9f && newMat.Roughness < 0.02f) || tMat.illum == 3) {
+                    if ((newMat.metallic > 0.9f && newMat.roughness < 0.02f) || tMat.illum == 3) {
                         newMat.Type = IDEAL_SPECULAR;
-                        newMat.Roughness = 0.0f; newMat.Metallic = 1.0f;
+                        newMat.roughness = 0.0f; newMat.metallic = 1.0f;
                     }
-                    else if (newMat.Metallic < 0.1f && newMat.Roughness > 0.95f) {
+                    else if (newMat.metallic < 0.1f && newMat.roughness > 0.95f) {
                         newMat.Type = IDEAL_DIFFUSE;
                     }
                     else {
@@ -212,9 +212,9 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
             else {
                 // Case 3: 创建默认材质
                 Material defaultMat{};
-                defaultMat.BaseColor = glm::vec3(0.7f); // 默认灰色
-                defaultMat.Roughness = 0.5f;
-                defaultMat.Metallic = 0.0f;
+                defaultMat.basecolor = glm::vec3(0.7f); // 默认灰色
+                defaultMat.roughness = 0.5f;
+                defaultMat.metallic = 0.0f;
                 defaultMat.Type = MicrofacetPBR;
                 this->materials.push_back(defaultMat);
             }
@@ -331,9 +331,9 @@ void Scene::buildLightCDF() {
     lightInfo.tri_idx.clear();
     lightInfo.cdf.clear();
 
-    int numTriangles = indices.size() / 3;
+    int num_triangles = indices.size() / 3;
 
-    for (int i = 0; i < numTriangles; i++) {
+    for (int i = 0; i < num_triangles; i++) {
 
         if (i >= materialIds.size()) {
             std::cerr << "Error: Triangle index " << i << " out of bounds for materialIds." << std::endl;

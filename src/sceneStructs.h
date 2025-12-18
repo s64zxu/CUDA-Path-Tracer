@@ -5,17 +5,12 @@
 #include <cuda_runtime.h>
 #include "glm/glm.hpp"
 
-#define BACKGROUND_COLOR (glm::vec3(0.0f))
-
-
 enum MaterialType
 {
     MicrofacetPBR,
     IDEAL_DIFFUSE,
     IDEAL_SPECULAR
 };
-
-
 
 struct Ray
 {
@@ -35,9 +30,9 @@ struct PathSegment
 
 struct Material
 {
-    glm::vec3 BaseColor; 
-    float Metallic;  
-    float Roughness; 
+    glm::vec3 basecolor;
+    float metallic;
+    float roughness;
     float emittance; // if it's a light soure
     MaterialType Type;
 };
@@ -68,52 +63,90 @@ struct RenderState
 // 2) BSDF evaluation: generate a new ray
 struct ShadeableIntersection
 {
-  float t;
-  glm::vec3 surfaceNormal;
-  int hitGeomId;
-  int materialId; 
+    float t;
+    glm::vec3 surfaceNormal;
+    int hitGeomId;
+    int materialId;
 };
 
 // Wavefront data struct
 struct PathState
 {
-    // ray info
-    float* ray_dir_x; float* ray_dir_y; float* ray_dir_z;
-    float* ray_ori_x; float* ray_ori_y; float* ray_ori_z;
-    
-    // intersection info
-    float* ray_t; // 光源采样：到光源的t 求交：初始为tmax，最终为到最近物体的t
+    // 核心光线数据 (float4 对齐)
+    // .xyz = origin, .w = padding (或 t_min)
+    float4* ray_ori;
+
+    // .xyz = direction, .w = ray_t (击中距离 / t_max)
+    // 将 ray_t 合并在此，读取光线时顺便读取距离
+    float4* ray_dir_dist;
+
+    // 击中信息
+    // .xyz = shading normal, .w = hit_u (或 padding)
+    float4* hit_normal;
+
+    // 材质与几何ID (分开存，因为不是所有阶段都需要读取)
     int* hit_geom_id;
     int* material_id;
-    float* hit_nor_x; float* hit_nor_y; float* hit_nor_z;
 
-    // path info
-    float* throughput_x; float* throughput_y; float* throughput_z;
+    // 路径状态
+    // .xyz = throughput color, .w = last_pdf (合并 PDF)
+    float4* throughput_pdf;
+
     int* pixel_idx;
-    float* last_pdf;
     int* remaining_bounces;
-    unsigned int* rng_state; // 随机数状态
+    unsigned int* rng_state;
+};
+
+struct LightData {
+    int* tri_idx;       // 发光三角形的索引
+    float* cdf;         // 光源采样的 CDF
+    int num_lights;     // 光源总数 (Changed from int* to int)
+    float total_area;   // 光源总面积 (Changed from float* to float)
 };
 
 struct ShadowQueue
 {
-    // Geom Info
-    float* ray_ori_x; float* ray_ori_y; float* ray_ori_z;
-    float* ray_dir_x; float* ray_dir_y; float* ray_dir_z;
-    float* ray_tmax;  // 光源距离 (必须有，超过这个距离就不算遮挡)
+    // .xyz = origin, .w = t_max
+    float4* ray_ori_tmax;
+    // .xyz = direction, .w = padding
+    float4* ray_dir;
+    // .xyz = radiance, .w = padding
+    float4* radiance;
 
-    // 能量载荷 (Payload)
-    float* radiance_x; float* radiance_y; float* radiance_z;
-    int* pixel_idx;  
+    int* pixel_idx;
 };
 
-struct MeshData{
-    float* pos_x;float* pos_y;float* pos_z;
-    float* nor_x;float* nor_y;float* nor_z;
-    float* uv_u;float* uv_v;
-    int* idx_v0;int* idx_v1;int* idx_v2; // 三角形对应的三个顶点的索引
-    int* mat_id;
-    // 计数器
-    int numVertices;
-    int numTriangles;
+// idx = i， 对应顶点为 pos[i]，对应AABB为 aabb_min[i], aabb_max[i]
+struct MeshData {
+    // .xyz = pos, .w = 1.0f
+    float4* pos;
+    // .xyz = nor, .w = 0.0f
+    float4* nor;
+    // .xy = uv
+    float2* uv;
+    // .x=v0, .y=v1, .z=v2, .w=mat_id
+    int4* indices_matid;
+
+    int num_vertices;
+    int num_triangles;
+};
+
+struct LBVHData {
+    // 索引 [0 ~ N-2] 是内部节点，[N ~ 2N-1] 是叶子，N-1不存储数据
+    float4* aabb_min; // .xyz = min, .w = padding
+    float4* aabb_max; // .xyz = max, .w = padding
+    // 世界包围盒
+    float4 world_aabb_min; // .xyz = min, .w = padding
+    float4 world_aabb_max; // .xyz = max, .w = padding
+
+    float4* centroid; // .xyz = centroid, .w = padding
+
+	// 莫顿码排序后的三角形片元和AABB包围盒的索引（不对aabb进行排序）
+    int* primitive_indices;
+    unsigned long long* morton_codes;
+
+	int2* child_nodes; // .x = left, .y = right
+    int* parent;
+
+	int* escape_indices; // 用于遍历的逃逸索引
 };

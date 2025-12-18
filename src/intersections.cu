@@ -1,7 +1,7 @@
 #include "intersections.h"
 #include <glm/gtc/matrix_inverse.hpp>
 
-__host__ __device__ float triangleIntersectionTest(
+__device__ float TriangleIntersectionTest(
     const glm::vec3& v0,
     const glm::vec3& v1, 
     const glm::vec3& v2, 
@@ -23,4 +23,34 @@ __host__ __device__ float triangleIntersectionTest(
 	float t = glm::dot(edge2, qvec) * invDet;
     if (t < EPSILON) return -1.0f;
 	return t;
+}
+
+__device__ float BoudingboxIntersetionTest(
+	const glm::vec3& p_min,
+	const glm::vec3& p_max,
+	const Ray& r,
+	const glm::vec3& inv_dir
+)
+{
+    // 可以处理光线平行坐标轴、光线恰好在某轴的平面上运动两种情况
+	float t1x = (p_min.x - r.origin.x) * inv_dir.x;
+	float t2x = (p_max.x - r.origin.x) * inv_dir.x;
+	float t_near = fminf(t1x, t2x);
+	float t_far = fmaxf(t1x, t2x);
+
+	float t1y = (p_min.y - r.origin.y) * inv_dir.y;
+	float t2y = (p_max.y - r.origin.y) * inv_dir.y;
+	t_near = fmaxf(t_near, fminf(t1y, t2y));
+	t_far = fminf(t_far, fmaxf(t1y, t2y));
+
+	float t1z = (p_min.z - r.origin.z) * inv_dir.z;
+	float t2z = (p_max.z - r.origin.z) * inv_dir.z;
+	t_near = fmaxf(t_near, fminf(t1z, t2z));
+	t_far = fminf(t_far, fmaxf(t1z, t2z));
+
+	if (t_near <= t_far && t_far > 0.0f) {
+		return fmaxf(0.0f, t_near); // 如果在内部(t_near<0)，返回0；否则返回 t_near
+	}
+
+	return -1.0f;
 }

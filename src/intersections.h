@@ -37,9 +37,16 @@ __host__ __device__ inline glm::vec3 multiplyMV(glm::mat4 m, glm::vec4 v)
 {
     return glm::vec3(m * v);
 }
-__host__ __device__ float triangleIntersectionTest(
+__host__ __device__ float TriangleIntersectionTest(
     const glm::vec3& v0,
     const glm::vec3& v1,
     const glm::vec3& v2,
     const Ray& r,
     float& out_u, float& out_v);
+
+__device__ float BoudingboxIntersetionTest(
+    const glm::vec3& p_min,
+    const glm::vec3& p_max,
+    const Ray& r,
+    const glm::vec3& inv_dir
+);

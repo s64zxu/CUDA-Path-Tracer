@@ -72,13 +72,13 @@ __host__ __device__ glm::vec3 NDFImportanceSampling(const glm::vec3& N, const gl
 
 // 辅助：计算镜面反射项采样的概率权重 (用于 Sample 和 PDF 保持一致)
 __host__ __device__ float CalculateSpecularProbability(const Material& m, const glm::vec3& N, const glm::vec3& V) {
-    glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.BaseColor, m.Metallic);
+    glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.basecolor, m.metallic);
     glm::vec3 F = FresnelSchlick(F0, glm::max(glm::dot(N, V), 0.0f));
 
     // 简单的亮度平均
     float specProb = (F.r + F.g + F.b) / 3.0f;
     // 金属度越高，高光概率越高
-    specProb = glm::mix(specProb, 1.0f, m.Metallic);
+    specProb = glm::mix(specProb, 1.0f, m.metallic);
     // 钳制范围，防止完全不采样某一种导致 PDF 为 0
     return glm::clamp(specProb, 0.001f, 0.999f);
 }
@@ -95,10 +95,10 @@ __host__ __device__ glm::vec3 evalPBR(const glm::vec3& wo, const glm::vec3& wi, 
 
     glm::vec3 H = glm::normalize(wo + wi);
     float VdotH = glm::max(glm::dot(wo, H), 0.0f);
-    float roughness = glm::clamp(m.Roughness, 0.05f, 1.0f);
+    float roughness = glm::clamp(m.roughness, 0.05f, 1.0f);
 
     // --- Specular Term (Cook-Torrance) ---
-    glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.BaseColor, m.Metallic);
+    glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.basecolor, m.metallic);
     glm::vec3 F = FresnelSchlick(F0, VdotH);
     float D = DistributionGGX(N, H, roughness);
     float G = GeometrySmith(N, wo, wi, roughness);
@@ -110,16 +110,16 @@ __host__ __device__ glm::vec3 evalPBR(const glm::vec3& wo, const glm::vec3& wi, 
     // --- Diffuse Term (Lambert) ---
     glm::vec3 kS = F;
     glm::vec3 kD = glm::vec3(1.0f) - kS;
-    kD *= (1.0f - m.Metallic); // 纯金属没有漫反射
+    kD *= (1.0f - m.metallic); // 纯金属没有漫反射
 
-    glm::vec3 diffuse = kD * m.BaseColor * INV_PI;
+    glm::vec3 diffuse = kD * m.basecolor * INV_PI;
 
     return diffuse + specular;
 }
 
 // 1.2 Ideal Diffuse 
 __host__ __device__ glm::vec3 evalDiffuse(const Material& m, const glm::vec3& N, const glm::vec3& wi) {
-    return m.BaseColor * INV_PI; 
+    return m.basecolor * INV_PI; 
 }
 
 // 1.3 Ideal Specular
@@ -139,7 +139,7 @@ __host__ __device__ float pdfPBR(const glm::vec3& wo, const glm::vec3& wi, const
 
     glm::vec3 H = glm::normalize(wo + wi);
     float VdotH = glm::max(glm::dot(wo, H), 0.0f);
-    float roughness = glm::clamp(m.Roughness, 0.05f, 1.0f);
+    float roughness = glm::clamp(m.roughness, 0.05f, 1.0f);
 
     // 1. Diffuse PDF (Cosine Weighted)
     float pdfDiff = NdotL * INV_PI;
@@ -215,7 +215,7 @@ __host__ __device__ glm::vec3 samplePBR(
     glm::vec2 xi = glm::vec2(rand_float(seed), rand_float(seed));
     float r_select = rand_float(seed);
 
-    float roughness = glm::clamp(m.Roughness, 0.05f, 1.0f);
+    float roughness = glm::clamp(m.roughness, 0.05f, 1.0f);
     float specProb = CalculateSpecularProbability(m, N, wo);
 
     // 决策：采样高光还是漫反射
@@ -269,7 +269,7 @@ __host__ __device__ glm::vec3 sampleSpecular(
     pdf = pdfSpecular(wo, wi, N);
 
     // 计算 Fresnel 项 Fr
-    glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.BaseColor, m.Metallic);
+    glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.basecolor, m.metallic);
     glm::vec3 Fr = FresnelSchlick(F0, NdotWi);
 
     return Fr;
@@ -292,22 +292,32 @@ __host__ __device__ void SampleLight(
     float r3 = rand_float(seed);// 用于三角形内重心坐标 v
 
     int cdf_index = BinarySearch(light_cdf, num_lights, r1);
-	int tri_index = light_tri_idx[cdf_index];
+    int tri_index = light_tri_idx[cdf_index];
 
-    int idx0 = mesh_data.idx_v0[tri_index];
-    int idx1 = mesh_data.idx_v1[tri_index];
-    int idx2 = mesh_data.idx_v2[tri_index];
+    int4 indices = mesh_data.indices_matid[tri_index];
+    int idx0 = indices.x;
+    int idx1 = indices.y;
+    int idx2 = indices.z;
 
-    glm::vec3 p0(mesh_data.pos_x[idx0], mesh_data.pos_y[idx0], mesh_data.pos_z[idx0]);
-    glm::vec3 p1(mesh_data.pos_x[idx1], mesh_data.pos_y[idx1], mesh_data.pos_z[idx1]);
-    glm::vec3 p2(mesh_data.pos_x[idx2], mesh_data.pos_y[idx2], mesh_data.pos_z[idx2]);
+    float4 v0 = mesh_data.pos[idx0];
+    float4 v1 = mesh_data.pos[idx1];
+    float4 v2 = mesh_data.pos[idx2];
+
+    // 转换为 glm::vec3 进行计算
+    glm::vec3 p0(v0.x, v0.y, v0.z);
+    glm::vec3 p1(v1.x, v1.y, v1.z);
+    glm::vec3 p2(v2.x, v2.y, v2.z);
 
     // 三角形重心坐标随机采样
     float sqrt_r2 = sqrt(r2);
     float b_u = 1.0f - sqrt_r2;
     float b_v = r3 * sqrt_r2;
-	sample_point = p0 * b_u + p1 * b_v + p2 * (1.0f - b_u - b_v);
+
+    sample_point = p0 * b_u + p1 * b_v + p2 * (1.0f - b_u - b_v);
+
+    // 计算几何面法线
     sample_normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+
     pdf_area = 1.0f / total_light_area;
-	light_idx = tri_index;
+    light_idx = tri_index;
 }

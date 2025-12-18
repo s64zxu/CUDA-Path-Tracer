@@ -8,4 +8,5 @@ namespace pathtrace_wavefront {
 	void PathtraceInit(Scene* scene);
 	void PathtraceFree();
 	void Pathtrace(uchar4* pbo, int frame, int iteration);
+	void InitBVH(Scene* scene);
 }

@@ -65,6 +65,7 @@ set(headers
     src/cuda_utilities.h
     src/rng.h
     src/tiny_obj_loader.h
+    src/bvh.h
 )
 
 set(sources
@@ -80,6 +81,7 @@ set(sources
     src/preview.cpp
     src/utilities.cpp
     src/cuda_utilities.cu
+    src/bvh.cu
 )
 
 set(imgui_headers
