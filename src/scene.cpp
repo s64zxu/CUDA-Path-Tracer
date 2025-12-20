@@ -191,10 +191,8 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
 
                     // PBR ×ª»»Âß¼­
                     if (tMat.shininess >= 0) newMat.roughness = 1.0f - std::min(1.0f, tMat.shininess / 1000.0f);
-
                     float specAvg = (tMat.specular[0] + tMat.specular[1] + tMat.specular[2]) / 3.0f;
                     newMat.metallic = (specAvg > 0.1f) ? 1.0f : 0.0f;
-
                     if ((newMat.metallic > 0.9f && newMat.roughness < 0.02f) || tMat.illum == 3) {
                         newMat.Type = IDEAL_SPECULAR;
                         newMat.roughness = 0.0f; newMat.metallic = 1.0f;
@@ -205,7 +203,6 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                     else {
                         newMat.Type = MicrofacetPBR;
                     }
-
                     this->materials.push_back(newMat);
                 }
             }
@@ -377,5 +374,4 @@ void Scene::buildLightCDF() {
         }
     }
     lightInfo.num_lights = (int)lightInfo.tri_idx.size();
-    std::cout << "Found " << lightInfo.num_lights << " emissive triangles. Total Area: " << lightInfo.total_area << std::endl;
 }

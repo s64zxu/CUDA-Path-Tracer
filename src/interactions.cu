@@ -237,6 +237,7 @@ __host__ __device__ glm::vec3 samplePBR(
     // 计算 PDF 和 BRDF 值
     pdf = pdfPBR(wo, wi, N, m);
     glm::vec3 fr = evalPBR(wo, wi, N, m);
+	// attenuation = fr * costheta / pdf
     return fr * glm::max(0.0f, glm::dot(N, wi)) / glm::max(pdf, EPSILON);
 }
 
@@ -254,7 +255,6 @@ __host__ __device__ glm::vec3 sampleDiffuse(
     pdf = pdfDiffuse(wi, N);
     glm::vec3 fr = evalDiffuse(m, N, wi);
 
-    // 返回 MIS 权重 f_r * NdotL / pdf
     return fr * glm::max(0.0f, glm::dot(N, wi)) / glm::max(pdf, EPSILON);
 }
 
@@ -271,7 +271,6 @@ __host__ __device__ glm::vec3 sampleSpecular(
     // 计算 Fresnel 项 Fr
     glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.basecolor, m.metallic);
     glm::vec3 Fr = FresnelSchlick(F0, NdotWi);
-
     return Fr;
 }
 

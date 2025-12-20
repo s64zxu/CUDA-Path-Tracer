@@ -8,7 +8,7 @@
 #include <thrust/tuple.h>
 
 
-namespace pathtrace{
+namespace pathtrace_megakernel {
 	void InitDataContainer(GuiDataContainer* guiData);
 	void PathtraceInit(Scene* scene);
 	void PathtraceFree();

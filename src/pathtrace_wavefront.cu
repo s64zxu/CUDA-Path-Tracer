@@ -9,6 +9,8 @@
 #include <nvtx3/nvToolsExt.h>
 #include <cuda_runtime.h>
 
+#include <device_launch_parameters.h>
+
 #include "sceneStructs.h"
 #include "scene.h"
 #include "glm/glm.hpp"
@@ -20,6 +22,7 @@
 #include "rng.h"
 #include "bvh.h"
 
+#define ENABLE_VISUALIZATION 1
 
 #define CUDA_ENABLE_ERROR_CHECK 0
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
@@ -31,7 +34,6 @@
 #define checkCUDAError(msg)
 #endif
 
-// todo：1. 光线数量逐渐减少 2. 间接光照过暗（原因：墙壁和几何体材质都是纯漫反射，）
 
 // 1. 使用 unsigned char 数组代替 Geom 数组，骗过编译器
 // 2. 必须加上 __align__(16)，因为 Geom 里有 mat4，GPU 读取需要 16 字节对齐
@@ -163,8 +165,8 @@ namespace pathtrace_wavefront
         }
         else {
 			// todo： no emissive light handling
-            /*std::cerr << "[ERROR] No emissive materials found." << std::endl;
-            std::exit(1);*/
+            std::cerr << "[ERROR] No emissive materials found." << std::endl;
+            std::exit(1);
         }
 
         // 2. Mesh Data
@@ -340,8 +342,47 @@ namespace pathtrace_wavefront
         InitImageSystem(cam);
         InitMaterials(scene);
         InitSceneGeometry(scene); // Mesh & Light
-		InitBVH(scene);           // todo: iter = 0 会调用 BuildBVH，修改调用逻辑
+        InitBVH(scene);
         InitWavefront(NUM_PATHS); // Path State & Queues
+
+        printf("\n====== Path Tracer Scene Information ======\n");
+
+        // 1. 材质种类统计
+        int count_pbr = 0;
+        int count_diffuse = 0;
+        int count_specular = 0;
+        for (const auto& mat : scene->materials) {
+            if (mat.Type == MicrofacetPBR) count_pbr++;
+            else if (mat.Type == IDEAL_DIFFUSE) count_diffuse++;
+            else if (mat.Type == IDEAL_SPECULAR) count_specular++;
+        }
+
+        // 2. 各材质对应的三角形面数统计
+        long long faces_pbr = 0;
+        long long faces_diffuse = 0;
+        long long faces_specular = 0;
+
+        for (int matId : scene->materialIds) {
+            if (matId >= 0 && matId < scene->materials.size()) {
+                MaterialType type = scene->materials[matId].Type;
+                if (type == MicrofacetPBR) faces_pbr++;
+                else if (type == IDEAL_DIFFUSE) faces_diffuse++;
+                else if (type == IDEAL_SPECULAR) faces_specular++;
+            }
+        }
+
+        // 打印材质信息
+        std::cout << "[Material] Total Materials: " << scene->materials.size() << std::endl;
+        std::cout << "  > Microfacet PBR: " << count_pbr << " types, " << faces_pbr << " faces" << std::endl;
+        std::cout << "  > Ideal Diffuse:  " << count_diffuse << " types, " << faces_diffuse << " faces" << std::endl;
+        std::cout << "  > Ideal Specular: " << count_specular << " types, " << faces_specular << " faces" << std::endl;
+
+        // 几何与灯光信息
+        std::cout << "[Geometry] Total Vertices:  " << scene->vertices.size() << std::endl;
+        std::cout << "[Geometry] Total Triangles: " << (scene->indices.size() / 3) << std::endl;
+        std::cout << "[Light] Emissive Triangles: " << scene->lightInfo.num_lights << std::endl;
+        std::cout << "[Light] Total Light Area:   " << scene->lightInfo.total_area << std::endl;
+        printf("============================================\n");
 
         CHECK_CUDA_ERROR("PathtraceInit");
     }
@@ -455,125 +496,131 @@ namespace pathtrace_wavefront
         }
     }
 
-
     __global__ void TraceExtensionRayKernel(
         int* d_extension_ray_queue,
         int* d_extension_ray_counter,
-        MeshData mesh_data,
+        const MeshData mesh_data,
         PathState d_path_state,
-        LBVHData d_bvh_data)
+        const LBVHData d_bvh_data)
     {
         int index = blockIdx.x * blockDim.x + threadIdx.x;
         if (index >= *d_extension_ray_counter) return;
 
-        int path_index = d_extension_ray_queue[index];
+        // 使用 __ldg 读取队列
+        int path_index = __ldg(&d_extension_ray_queue[index]);
 
-        // 1. 准备光线
+        // 读取 Ray
         Ray ray;
-        ray.origin = MakeVec3(d_path_state.ray_ori[path_index]);
-        ray.direction = MakeVec3(d_path_state.ray_dir_dist[path_index]);
+        ray.origin = MakeVec3(__ldg(&d_path_state.ray_ori[path_index]));
+        ray.direction = MakeVec3(__ldg(&d_path_state.ray_dir_dist[path_index]));
         glm::vec3 inv_dir = 1.0f / ray.direction;
-        // 预计算光线方向的正负号，用于判断近/远子节点顺序 (可选优化，这里先用简单版)
-        int dir_is_neg[3] = { inv_dir.x < 0, inv_dir.y < 0, inv_dir.z < 0 };
 
         int hit_geom_id = -1;
-        int hit_mat_id = -1;
         float t_min = FLT_MAX;
-        float hit_u = 0.0f;
-        float hit_v = 0.0f;
+        float hit_u = 0.0f, hit_v = 0.0f;
 
-        if (mesh_data.num_triangles > 0)
+        int stack[16];
+        int stack_ptr = 0;
+        int node_idx = 0;
+
+        // Root AABB 剔除
+        float t_root;
         {
-            // === Stackless Traversal ===
-            // 从根节点(0)开始
-            int node_idx = 0;
-            // 只要节点索引有效，就继续循环
-            while (node_idx != -1)
-            {
-                // 1. 获取当前节点的 AABB
-                float4 box_min = d_bvh_data.aabb_min[node_idx];
-                float4 box_max = d_bvh_data.aabb_max[node_idx];
-
-                // 2. 与 AABB 求交
-                float t_box = BoudingboxIntersetionTest(MakeVec3(box_min), MakeVec3(box_max), ray, inv_dir);
-
-                // 3. 判断是否命中
-                bool hit_aabb = (t_box != -1.0f) && (t_box < t_min);
-
-                if (hit_aabb)
-                {
-                    // [情况 A]: 命中 AABB
-                    // 检查是否是叶子节点
-                    if (node_idx >= mesh_data.num_triangles)
-                    {
-                        // --- 是叶子节点：进行三角形求交 ---
-                        int tri_idx = d_bvh_data.primitive_indices[node_idx];
-                        int4 idx_mat = mesh_data.indices_matid[tri_idx];
-
-                        glm::vec3 p0 = MakeVec3(mesh_data.pos[idx_mat.x]);
-                        glm::vec3 p1 = MakeVec3(mesh_data.pos[idx_mat.y]);
-                        glm::vec3 p2 = MakeVec3(mesh_data.pos[idx_mat.z]);
-
-                        float u, v;
-                        float t = TriangleIntersectionTest(p0, p1, p2, ray, u, v);
-                        if (t > EPSILON && t < t_min) {
-                            t_min = t;
-                            hit_geom_id = tri_idx;
-                            hit_mat_id = idx_mat.w;
-                            hit_u = u; hit_v = v;
-                        }
-                        node_idx = d_bvh_data.escape_indices[node_idx];
-                    }
-                    else
-                    {
-                        int left_child = DecodeNode(d_bvh_data.child_nodes[node_idx].x);
-                        int right_child = DecodeNode(d_bvh_data.child_nodes[node_idx].y);
-
-                        // 这里可以做一个简单的优化：总是先访问较近的节点 (需要读左右孩子的AABB，稍微增加开销但能Early Exit)
-                        // 为保持无栈逻辑简单，直接进入左孩子。
-                        // 逻辑是：如果进入左孩子，等左孩子子树遍历完，左孩子的 escape 会指向右孩子。
-                        node_idx = left_child;
-                    }
-                }
-                else
-                {
-                    node_idx = d_bvh_data.escape_indices[node_idx];
-                }
-            }
+            float4 root_min = __ldg(&d_bvh_data.aabb_min[0]);
+            float4 root_max = __ldg(&d_bvh_data.aabb_max[0]);
+            t_root = BoudingboxIntersetionTest(MakeVec3(root_min), MakeVec3(root_max), ray, inv_dir);
         }
 
-        // 写入结果 (保持不变)
+        if (t_root == -1.0f) node_idx = -1;
+
+        while (node_idx != -1 || stack_ptr > 0)
+        {
+            if (node_idx == -1) node_idx = stack[--stack_ptr];
+
+            if (node_idx >= mesh_data.num_triangles) // Leaf
+            {
+                int tri_idx = __ldg(&d_bvh_data.primitive_indices[node_idx]);
+                int4 idx_mat = __ldg(&mesh_data.indices_matid[tri_idx]);
+
+                // 仅仅读取位置进行相交测试
+                float u, v, t;
+                {
+                    glm::vec3 p0 = MakeVec3(__ldg(&mesh_data.pos[idx_mat.x]));
+                    glm::vec3 p1 = MakeVec3(__ldg(&mesh_data.pos[idx_mat.y]));
+                    glm::vec3 p2 = MakeVec3(__ldg(&mesh_data.pos[idx_mat.z]));
+                    t = TriangleIntersectionTest(p0, p1, p2, ray, u, v);
+                }
+
+                if (t > EPSILON && t < t_min) {
+                    t_min = t;
+                    hit_geom_id = tri_idx;
+                    // hit_mat_id = idx_mat.w; // 移除：不要在循环里读取/保存这个
+                    hit_u = u;
+                    hit_v = v;
+                }
+                node_idx = -1;
+            }
+            else // Internal
+            {
+                int2 children = __ldg(&d_bvh_data.child_nodes[node_idx]);
+                int left = DecodeNode(children.x);
+                int right = DecodeNode(children.y);
+
+                float t_l, t_r;
+
+                {
+                    float4 min_l = __ldg(&d_bvh_data.aabb_min[left]);
+                    float4 max_l = __ldg(&d_bvh_data.aabb_max[left]);
+                    float4 min_r = __ldg(&d_bvh_data.aabb_min[right]);
+                    float4 max_r = __ldg(&d_bvh_data.aabb_max[right]);
+                    t_l = BoudingboxIntersetionTest(MakeVec3(min_l), MakeVec3(max_l), ray, inv_dir);
+                    t_r = BoudingboxIntersetionTest(MakeVec3(min_r), MakeVec3(max_r), ray, inv_dir);
+                }
+
+                bool hit_l = (t_l != -1.0f && t_l < t_min);
+                bool hit_r = (t_r != -1.0f && t_r < t_min);
+
+                if (hit_l && hit_r) {
+                    int first = (t_l < t_r) ? left : right;
+                    int second = (t_l < t_r) ? right : left;
+                    stack[stack_ptr++] = second;
+                    node_idx = first;
+                }
+                else if (hit_l) node_idx = left;
+                else if (hit_r) node_idx = right;
+                else node_idx = -1;
+            }
+            if (stack_ptr >= 32) break;
+        }
+
+
+        // === 写入阶段 ===
         if (hit_geom_id == -1) {
             d_path_state.ray_dir_dist[path_index].w = -1.0f;
             d_path_state.hit_geom_id[path_index] = -1;
         }
         else {
-            int4 idx_mat = mesh_data.indices_matid[hit_geom_id];
-            glm::vec3 n0 = MakeVec3(mesh_data.nor[idx_mat.x]);
-            glm::vec3 n1 = MakeVec3(mesh_data.nor[idx_mat.y]);
-            glm::vec3 n2 = MakeVec3(mesh_data.nor[idx_mat.z]);
-            glm::vec3 hit_normal = glm::normalize((1.0f - hit_u - hit_v) * n0 + hit_u * n1 + hit_v * n2);
-
+            int4 idx_mat = __ldg(&mesh_data.indices_matid[hit_geom_id]);
             d_path_state.ray_dir_dist[path_index].w = t_min;
-            d_path_state.material_id[path_index] = hit_mat_id;
+            d_path_state.material_id[path_index] = idx_mat.w;
             d_path_state.hit_geom_id[path_index] = hit_geom_id;
-            d_path_state.hit_normal[path_index] = make_float4(hit_normal.x, hit_normal.y, hit_normal.z, 0.0f);
+            d_path_state.hit_normal[path_index] = make_float4(hit_u, hit_v, 0.0f, 0.0f);
         }
     }
-
+    
     __global__ void TraceShadowRayKernel(
-        ShadowQueue d_shadow_queue,
-        int d_shadow_queue_counter,
-        glm::vec3* d_image,
-        MeshData mesh_data,
-        LBVHData d_bvh_data) // 确保传入 BVH 数据
+    ShadowQueue d_shadow_queue,
+    int d_shadow_queue_counter,
+    glm::vec3* d_image,
+    const MeshData mesh_data,
+    const LBVHData d_bvh_data)
     {
         int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
 
         if (queue_index < d_shadow_queue_counter)
         {
-            float4 ori_tmax = d_shadow_queue.ray_ori_tmax[queue_index];
-            float4 dir_pad = d_shadow_queue.ray_dir[queue_index];
+            float4 ori_tmax = __ldg(&d_shadow_queue.ray_ori_tmax[queue_index]);
+            float4 dir_pad = __ldg(&d_shadow_queue.ray_dir[queue_index]);
             Ray r;
             r.origin = MakeVec3(ori_tmax);
             r.direction = MakeVec3(dir_pad);
@@ -582,67 +629,64 @@ namespace pathtrace_wavefront
             float tmax = ori_tmax.w;
             bool occluded = false;
 
-            // 根节点索引 0
             int node_idx = 0;
+        
+            // 阴影射线通常只需要找到"任意"遮挡，不需要排序，也不需要求最近
             while (node_idx != -1)
             {
-                // 获取当前节点的 AABB
-                float4 min_val = d_bvh_data.aabb_min[node_idx];
-                float4 max_val = d_bvh_data.aabb_max[node_idx];
+                float4 min_val = __ldg(&d_bvh_data.aabb_min[node_idx]);
+                float4 max_val = __ldg(&d_bvh_data.aabb_max[node_idx]);
 
-                // AABB 求交
-                // BoudingboxIntersetionTest 返回 -1 表示未命中，否则返回 hit_t
                 float t_box = BoudingboxIntersetionTest(MakeVec3(min_val), MakeVec3(max_val), r, inv_dir);
 
                 if (t_box != -1.0f && tmax > t_box)
                 {
-                    // 判断是否是叶子节点 (根据你的布局，叶子索引 >= N)
                     if (node_idx >= mesh_data.num_triangles)
                     {
-                        int tri_idx = d_bvh_data.primitive_indices[node_idx];
-                        int4 idx_mat = mesh_data.indices_matid[tri_idx];
-                        glm::vec3 p0 = MakeVec3(mesh_data.pos[idx_mat.x]);
-                        glm::vec3 p1 = MakeVec3(mesh_data.pos[idx_mat.y]);
-                        glm::vec3 p2 = MakeVec3(mesh_data.pos[idx_mat.z]);
+                        // === 叶子节点 ===
+                        int tri_idx = __ldg(&d_bvh_data.primitive_indices[node_idx]);
+                        int4 idx_mat = __ldg(&mesh_data.indices_matid[tri_idx]);
+                    
+                        glm::vec3 p0 = MakeVec3(__ldg(&mesh_data.pos[idx_mat.x]));
+                        glm::vec3 p1 = MakeVec3(__ldg(&mesh_data.pos[idx_mat.y]));
+                        glm::vec3 p2 = MakeVec3(__ldg(&mesh_data.pos[idx_mat.z]));
 
                         float u, v;
                         float t = TriangleIntersectionTest(p0, p1, p2, r, u, v);
 
                         if (t > EPSILON && t < tmax - EPSILON)
                         {
-                            // 材质透射检查（可选）：如果支持透明阴影，这里需要检查材质 alpha
-                            // 对于不透明物体，只要命中一个，就一定是阴影
                             occluded = true;
-                            break; 
+                            break; // 阴影射线只要被遮挡就可以退出了
                         }
-                        node_idx = d_bvh_data.escape_indices[node_idx];
+                        node_idx = __ldg(&d_bvh_data.escape_indices[node_idx]);
                     }
                     else
                     {
-                        int left_child = d_bvh_data.child_nodes[node_idx].x;
-						// 叶子节点索引为负数，取反得到实际索引
+                        // === 内部节点 ===
+                        int left_child = __ldg(&d_bvh_data.child_nodes[node_idx].x); // 只需要读取 x 分量
                         if (left_child < 0) left_child = ~left_child;
                         node_idx = left_child;
                     }
                 }
                 else
                 {
-                    node_idx = d_bvh_data.escape_indices[node_idx];
+                    // 未命中包围盒，跳过整个子树
+                    node_idx = __ldg(&d_bvh_data.escape_indices[node_idx]);
                 }
             }
 
-            // 3. 累积 radiance
             if (!occluded)
             {
-                int pixel_idx = d_shadow_queue.pixel_idx[queue_index];
-                float4 rad = d_shadow_queue.radiance[queue_index];
+                // 结果写入不需要 LDG，且为 Atomic 操作
+                int pixel_idx = __ldg(&d_shadow_queue.pixel_idx[queue_index]);
+                float4 rad = __ldg(&d_shadow_queue.radiance[queue_index]);
                 AtomicAddVec3(&d_image[pixel_idx], MakeVec3(rad));
             }
         }
     }
 
-
-    // Compute Shadow Ray (Modified: Use Struct)
+    // Compute Shadow Ray 
     __device__ void ComputeNextEventEstimation(
         MeshData mesh_data,
         LightData light_data, // Modified: Pass struct
@@ -759,6 +803,24 @@ namespace pathtrace_wavefront
         d_path_state.rng_state[idx] = seed;
     }
 
+    __device__ __forceinline__ glm::vec3 GetShadingNormal(
+        const MeshData& mesh_data,
+        int primitive_id,
+        float u,
+        float v)
+    {
+        // 获取三角形的顶点索引 (只读取前3个分量)
+        // 注意：这里需要确保 Shading Kernel 能访问到 mesh_data
+        int4 idx_mat = __ldg(&mesh_data.indices_matid[primitive_id]);
+
+        // 读取三个顶点的法线
+        glm::vec3 n0 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.x]));
+        glm::vec3 n1 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.y]));
+        glm::vec3 n2 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.z]));
+
+        // 插值并归一化
+        return glm::normalize((1.0f - u - v) * n0 + u * n1 + v * n2);
+    }
 
     __global__ void SamplePBRMaterialKernel(
         int trace_depth,
@@ -782,7 +844,9 @@ namespace pathtrace_wavefront
             float4 dir_dist = d_path_state.ray_dir_dist[idx];
             float4 ori_pad = d_path_state.ray_ori[idx];
             float4 tp_pdf = d_path_state.throughput_pdf[idx];
-            float4 hit_nor = d_path_state.hit_normal[idx];
+            float4 hit_uv = d_path_state.hit_normal[idx];
+            int prim_id = d_path_state.hit_geom_id[idx];
+            glm::vec3 N = GetShadingNormal(d_mesh_data, prim_id, hit_uv.x, hit_uv.y); // shading normal
 
             float ray_t = dir_dist.w;
             int mat_id = d_path_state.material_id[idx];
@@ -791,7 +855,6 @@ namespace pathtrace_wavefront
             glm::vec3 ray_ori = MakeVec3(ori_pad);
             glm::vec3 ray_dir = MakeVec3(dir_dist);
             glm::vec3 throughput = MakeVec3(tp_pdf);
-            glm::vec3 N = MakeVec3(hit_nor); // shading normal 不是 geometry normal
 
             glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
             glm::vec3 wo = -ray_dir;
@@ -838,7 +901,9 @@ namespace pathtrace_wavefront
             float4 dir_dist = d_path_state.ray_dir_dist[idx];
             float4 ori_pad = d_path_state.ray_ori[idx];
             float4 tp_pdf = d_path_state.throughput_pdf[idx];
-            float4 hit_nor = d_path_state.hit_normal[idx];
+            float4 hit_uv = d_path_state.hit_normal[idx];
+            int prim_id = d_path_state.hit_geom_id[idx];
+            glm::vec3 N = GetShadingNormal(d_mesh_data, prim_id, hit_uv.x, hit_uv.y); // shading normal
 
             float ray_t = dir_dist.w;
             int mat_id = d_path_state.material_id[idx];
@@ -847,7 +912,7 @@ namespace pathtrace_wavefront
             glm::vec3 ray_ori = MakeVec3(ori_pad);
             glm::vec3 ray_dir = MakeVec3(dir_dist);
             glm::vec3 throughput = MakeVec3(tp_pdf);
-            glm::vec3 N = MakeVec3(hit_nor);
+            
 
             glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
             glm::vec3 wo = -ray_dir;
@@ -879,7 +944,8 @@ namespace pathtrace_wavefront
         int specular_path_count,
         int* d_extension_ray_queue,
         int* d_extension_ray_counter,
-        Material* d_materials)
+        Material* d_materials,
+        MeshData d_mesh_data)
     {
         int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
 
@@ -891,7 +957,10 @@ namespace pathtrace_wavefront
             float4 dir_dist = d_path_state.ray_dir_dist[idx];
             float4 ori_pad = d_path_state.ray_ori[idx];
             float4 tp_pdf = d_path_state.throughput_pdf[idx];
-            float4 hit_nor = d_path_state.hit_normal[idx];
+
+            float4 hit_uv = d_path_state.hit_normal[idx];
+            int prim_id = d_path_state.hit_geom_id[idx];
+            glm::vec3 N = GetShadingNormal(d_mesh_data, prim_id, hit_uv.x, hit_uv.y); // shading normal
 
             float ray_t = dir_dist.w;
             // int hit_geom_id = d_path_state.hit_geom_id[idx]; // Unused here
@@ -900,7 +969,6 @@ namespace pathtrace_wavefront
             glm::vec3 ray_ori = MakeVec3(ori_pad);
             glm::vec3 ray_dir = MakeVec3(dir_dist);
             glm::vec3 throughput = MakeVec3(tp_pdf);
-            glm::vec3 N = MakeVec3(hit_nor);
 
             glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
             glm::vec3 wo = -ray_dir;
@@ -1172,7 +1240,7 @@ namespace pathtrace_wavefront
                 int blocks = (num_specular_paths + block_size_1d - 1) / block_size_1d;
                 SampleSpecularMaterialKernel << <blocks, block_size_1d >> > (
                     trace_depth, d_path_state, d_specular_queue, num_specular_paths,
-                    d_extension_ray_queue, d_extension_ray_counter, d_materials);
+                    d_extension_ray_queue, d_extension_ray_counter, d_materials, d_mesh_data);
                 CHECK_CUDA_ERROR("SampleSpecularMaterialKernel");
             }
 
@@ -1197,9 +1265,13 @@ namespace pathtrace_wavefront
 
             if (num_extension_rays > 0) {
                 int blocks = (num_extension_rays + block_size_1d - 1) / block_size_1d;
+                //const int stack_depth = 32;
+                //// 计算需要的 Shared Memory 大小 (Bytes) = 线程数 * 深度 * int大小
+                //size_t shared_mem_size = block_size_1d * stack_depth * sizeof(int);
+
                 TraceExtensionRayKernel << <blocks, block_size_1d >> > (
                     d_extension_ray_queue, d_extension_ray_counter,
-                    d_mesh_data, d_path_state, d_bvh_data);
+                    d_mesh_data, d_path_state, d_bvh_data); 
             }
 
             if (num_shadow_rays > 0) {
@@ -1231,8 +1303,10 @@ namespace pathtrace_wavefront
         cudaEventDestroy(stop);
 
         // 所有Kernel执行完成才可以拷贝图像
+#if ENABLE_VISUALIZATION
         cudaDeviceSynchronize();
         SendImageToPBOKernel << <blocks_per_grid_2d, block_size_2d >> > (pbo, cam.resolution, iter, d_image, d_pixel_sample_count);
         CHECK_CUDA_ERROR("SendImageToPBOKernel");
+#endif
     }
 }

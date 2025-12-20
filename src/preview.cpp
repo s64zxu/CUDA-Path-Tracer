@@ -1,10 +1,13 @@
-//#define _CRT_SECURE_NO_DEPRECATE
+#define _CRT_SECURE_NO_DEPRECATE
 #include <ctime>
-#include "main.h"
+#include "main.h" // 【关键】必须包含这个以获取 ENABLE_VISUALIZATION 宏
 #include "preview.h"
 #include "ImGui/imgui.h"
 #include "ImGui/imgui_impl_glfw.h"
 #include "ImGui/imgui_impl_opengl3.h"
+
+#define ENABLE_VISUALIZATION 1
+
 GLuint positionLocation = 0;
 GLuint texcoordsLocation = 1;
 GLuint pbo;
@@ -30,15 +33,18 @@ std::string currentTimeString()
 
 void initTextures()
 {
+#if ENABLE_VISUALIZATION
     glGenTextures(1, &displayImage);
     glBindTexture(GL_TEXTURE_2D, displayImage);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+#endif
 }
 
 void initVAO(void)
 {
+#if ENABLE_VISUALIZATION
     GLfloat vertices[] = {
         -1.0f, -1.0f,
         1.0f, -1.0f,
@@ -70,10 +76,12 @@ void initVAO(void)
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vertexBufferObjID[2]);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+#endif
 }
 
 GLuint initShader()
 {
+#if ENABLE_VISUALIZATION
     const char* attribLocations[] = { "Position", "Texcoords" };
     GLuint program = glslUtility::createDefaultProgram(attribLocations, 2);
     GLint location;
@@ -85,10 +93,14 @@ GLuint initShader()
     }
 
     return program;
+#else
+    return 0;
+#endif
 }
 
 void deletePBO(GLuint* pbo)
 {
+#if ENABLE_VISUALIZATION
     if (pbo)
     {
         // unregister this buffer object with CUDA
@@ -99,16 +111,20 @@ void deletePBO(GLuint* pbo)
 
         *pbo = (GLuint)NULL;
     }
+#endif
 }
 
 void deleteTexture(GLuint* tex)
 {
+#if ENABLE_VISUALIZATION
     glDeleteTextures(1, tex);
     *tex = (GLuint)NULL;
+#endif
 }
 
 void cleanupCuda()
 {
+#if ENABLE_VISUALIZATION
     if (pbo)
     {
         deletePBO(&pbo);
@@ -117,18 +133,22 @@ void cleanupCuda()
     {
         deleteTexture(&displayImage);
     }
+#endif
 }
 
 void initCuda()
 {
+#if ENABLE_VISUALIZATION
+    // Headless 模式绝对不能调用 cudaGLSetGLDevice，否则 Nsight 会卡死
     cudaGLSetGLDevice(0);
-
     // Clean up on program exit
     atexit(cleanupCuda);
+#endif
 }
 
 void initPBO()
 {
+#if ENABLE_VISUALIZATION
     // set up vertex data parameter
     int num_texels = width * height;
     int num_values = num_texels * 4;
@@ -143,6 +163,7 @@ void initPBO()
     // Allocate data for the buffer. 4-channel 8-bit image
     glBufferData(GL_PIXEL_UNPACK_BUFFER, size_tex_data, NULL, GL_DYNAMIC_COPY);
     cudaGLRegisterBufferObject(pbo);
+#endif
 }
 
 void errorCallback(int error, const char* description)
@@ -152,6 +173,7 @@ void errorCallback(int error, const char* description)
 
 bool init()
 {
+#if ENABLE_VISUALIZATION
     glfwSetErrorCallback(errorCallback);
 
     if (!glfwInit())
@@ -197,21 +219,28 @@ bool init()
     glActiveTexture(GL_TEXTURE0);
 
     return true;
+#else
+    // Headless 模式下直接返回成功，不执行任何 GL 初始化
+    return true;
+#endif
 }
 
 void InitImguiData(GuiDataContainer* guiData)
 {
+#if ENABLE_VISUALIZATION
     imguiData = guiData;
     // initialize displayed traced depth from loaded scene if available
     if (imguiData != nullptr && scene != nullptr) {
         imguiData->TracedDepth = scene->state.traceDepth;
     }
+#endif
 }
 
 
 // LOOK: Un-Comment to check ImGui Usage
 void RenderImGui()
 {
+#if ENABLE_VISUALIZATION
     mouseOverImGuiWinow = io->WantCaptureMouse;
 
     ImGui_ImplOpenGL3_NewFrame();
@@ -225,31 +254,21 @@ void RenderImGui()
     static int counter = 0;
 
     ImGui::Begin("Path Tracer Analytics");                  // Create a window called "Hello, world!" and append into it.
-    
-    // LOOK: Un-Comment to check the output window and usage
-    //ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-    //ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-    //ImGui::Checkbox("Another Window", &show_another_window);
 
-    //ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-    //ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
-
-    //if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-    //    counter++;
-    //ImGui::SameLine();
-    //ImGui::Text("counter = %d", counter);
-    // Prefer reading directly from scene state to ensure accurate value
     if (scene != nullptr) {
         ImGui::Text("Traced Depth %d", scene->state.traceDepth);
-    } else if (imguiData != nullptr) {
+    }
+    else if (imguiData != nullptr) {
         ImGui::Text("Traced Depth %d", imguiData->TracedDepth);
-    } else {
+    }
+    else {
         ImGui::Text("Traced Depth %d", 0);
     }
 
     if (imguiData != nullptr) {
         ImGui::Text("MRays/s: %.2f", imguiData->MraysPerSec);
-    } else {
+    }
+    else {
         ImGui::Text("MRays/s: %.2f", 0.0f);
     }
     ImGui::Text("%.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
@@ -258,16 +277,21 @@ void RenderImGui()
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
+#endif
 }
 
 bool MouseOverImGuiWindow()
 {
+#if ENABLE_VISUALIZATION
     return mouseOverImGuiWinow;
+#else
+    return false;
+#endif
 }
 
 void mainLoop()
 {
+#if ENABLE_VISUALIZATION
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
@@ -287,7 +311,7 @@ void mainLoop()
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
         // VAO, shader program, and texture already bound
-        glDrawElements(GL_TRIANGLES, 6,  GL_UNSIGNED_SHORT, 0);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
 
         // Render ImGui Stuff
         RenderImGui();
@@ -301,4 +325,5 @@ void mainLoop()
 
     glfwDestroyWindow(window);
     glfwTerminate();
+#endif
 }

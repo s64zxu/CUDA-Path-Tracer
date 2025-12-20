@@ -283,6 +283,7 @@ __global__ void BuildEscapeIdx(LBVHData d_bvh_data, MeshData d_mesh_data)
     d_bvh_data.escape_indices[right_child] = escape;
 }
 
+// DEBUG函数
 void DebugPrintBVH(const LBVHData& d_bvh, int num_triangles) {
     if (num_triangles == 0) return;
 
@@ -369,7 +370,6 @@ void DebugPrintBVH(const LBVHData& d_bvh, int num_triangles) {
     printNode(printNode, 0, 0);
     printf("\n=========================\n");
 }
-
 // 打印所有叶子节点的详细信息
 void TestPrintLeafNodes(const LBVHData& d_bvh, int num_triangles) {
     if (num_triangles == 0) return;
@@ -411,11 +411,9 @@ void TestPrintLeafNodes(const LBVHData& d_bvh, int num_triangles) {
     }
     printf("=========================================\n\n");
 }
-
 int DecodeIndex(int idx) {
     return (idx < 0) ? ~idx : idx;
 }
-
 void TestHierarchyLogic(const LBVHData& d_bvh, int num_triangles) {
     if (num_triangles < 2) {
         printf("[TestHierarchy] Too few triangles to build a tree.\n");
@@ -540,12 +538,62 @@ void TestHierarchyLogic(const LBVHData& d_bvh, int num_triangles) {
     }
     printf("=============================================\n\n");
 }
+// 内部递归函数
+int GetDepthRecursive(int nodeIdx, int num_tris, const std::vector<int2>& h_children) {
+    // 解码索引
+    int realIdx = (nodeIdx < 0) ? ~nodeIdx : nodeIdx;
+
+    // 判断是否为叶子节点 (根据你的布局：索引 >= N 为叶子)
+    if (realIdx >= num_tris) {
+        return 1;
+    }
+
+    // 只有内部节点 (0 ~ num_tris-2) 才有孩子
+    if (realIdx >= num_tris - 1) return 0;
+
+    int left = h_children[realIdx].x;
+    int right = h_children[realIdx].y;
+
+    int leftDepth = GetDepthRecursive(left, num_tris, h_children);
+    int rightDepth = GetDepthRecursive(right, num_tris, h_children);
+
+    return 1 + std::max(leftDepth, rightDepth);
+}
+// 主入口函数
+void ComputeAndPrintMaxDepth(const LBVHData& d_bvh, int num_triangles) {
+    if (num_triangles <= 0) return;
+    if (num_triangles == 1) {
+        printf("BVH Max Depth: 1\n");
+        return;
+    }
+
+    int num_internal = num_triangles - 1;
+    std::vector<int2> h_children(num_internal);
+
+    // 从 GPU 下载孩子节点信息
+    cudaMemcpy(h_children.data(), d_bvh.child_nodes, sizeof(int2) * num_internal, cudaMemcpyDeviceToHost);
+
+    // 从根节点 0 开始计算
+    int maxDepth = GetDepthRecursive(0, num_triangles, h_children);
+
+    printf("LBVH Max Tree Depth:  %d\n", maxDepth);
+}
 
 void BuildLBVH(LBVHData& d_bvh_data, const MeshData& d_mesh_data)
 {
     int num_triangles = d_mesh_data.num_triangles;
     int blockSize = 256;
     int numBlocks = (num_triangles + blockSize - 1) / blockSize;
+
+    // prepare data
+    int* d_atomic_flags;
+    cudaMalloc((void**)&d_atomic_flags, sizeof(int) * num_triangles);
+    cudaMemset(d_atomic_flags, 0, sizeof(int) * num_triangles);
+    cudaMemset(d_bvh_data.parent, -1, sizeof(int) * (2 * num_triangles));
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
 
     // Step 1: 计算每个三角形的 AABB 和质心 (Kernel)
     ComputeAABB << <numBlocks, blockSize >> > (d_bvh_data, d_mesh_data);
@@ -559,24 +607,21 @@ void BuildLBVH(LBVHData& d_bvh_data, const MeshData& d_mesh_data)
     // Step 4: 排序 (Thrust Host Call)
     SortMortonCode(d_bvh_data, d_mesh_data);
 
-    cudaMemset(d_bvh_data.parent, -1, sizeof(int) * (2 * num_triangles));
-
     // Step 5: 生成 BVH 层次结构 (Kernel)
     GenerateHierarchy << <numBlocks, blockSize >> > (d_bvh_data, d_mesh_data);
-
-    // <--- 在这里插入测试 --->
-    cudaDeviceSynchronize(); // 确保内核执行完毕
-    TestHierarchyLogic(d_bvh_data, num_triangles);
 
     // Step 6: 设置叶子节点 (Kernel)
     SetupLeafNodes << <numBlocks, blockSize >> > (d_bvh_data, d_mesh_data);
 
     // Step 7: 构建内部AABB包围盒 (Kernel)
-    int* d_atomic_flags;
-    cudaMalloc((void**)&d_atomic_flags, sizeof(int) * num_triangles);
-    cudaMemset(d_atomic_flags, 0, sizeof(int) * num_triangles);
     RefitAABB << <numBlocks, blockSize >> > (d_bvh_data, d_mesh_data, d_atomic_flags);
-    cudaFree(d_atomic_flags);
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop); 
+
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("LBVH Build Time: %.3f ms\n", milliseconds);
 
     // Step 8：构建Escape Index
     // 初始化整个 escape_indices 缓冲区为 -1 (覆盖所有节点)
@@ -585,7 +630,13 @@ void BuildLBVH(LBVHData& d_bvh_data, const MeshData& d_mesh_data)
 
     // 叶子节点测试函数
     //TestPrintLeafNodes(d_bvh_data, num_triangles); // 叶子节点没错误
-
     // cudaDeviceSynchronize();
     // DebugPrintBVH(d_bvh_data, num_triangles);
+    cudaDeviceSynchronize();
+    ComputeAndPrintMaxDepth(d_bvh_data, d_mesh_data.num_triangles);
+	// 测试拓扑结构正确性
+    cudaDeviceSynchronize();
+    TestHierarchyLogic(d_bvh_data, num_triangles);
+
+    cudaFree(d_atomic_flags);
 }

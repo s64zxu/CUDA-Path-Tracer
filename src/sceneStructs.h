@@ -116,16 +116,19 @@ struct ShadowQueue
     int* pixel_idx;
 };
 
-// idx = i， 对应顶点为 pos[i]，对应AABB为 aabb_min[i], aabb_max[i]
+
 struct MeshData {
     // .xyz = pos, .w = 1.0f
-    float4* pos;
+    float4* __restrict__ pos;
+
     // .xyz = nor, .w = 0.0f
-    float4* nor;
+    float4* __restrict__ nor;
+
     // .xy = uv
-    float2* uv;
+    float2* __restrict__ uv;
+
     // .x=v0, .y=v1, .z=v2, .w=mat_id
-    int4* indices_matid;
+    int4* __restrict__ indices_matid;
 
     int num_vertices;
     int num_triangles;
@@ -133,20 +136,20 @@ struct MeshData {
 
 struct LBVHData {
     // 索引 [0 ~ N-2] 是内部节点，[N ~ 2N-1] 是叶子，N-1不存储数据
-    float4* aabb_min; // .xyz = min, .w = padding
-    float4* aabb_max; // .xyz = max, .w = padding
-    // 世界包围盒
-    float4 world_aabb_min; // .xyz = min, .w = padding
-    float4 world_aabb_max; // .xyz = max, .w = padding
+    float4* __restrict__ aabb_min;
+    float4* __restrict__ aabb_max;
 
-    float4* centroid; // .xyz = centroid, .w = padding
+    float4 world_aabb_min;
+    float4 world_aabb_max;
 
-	// 莫顿码排序后的三角形片元和AABB包围盒的索引（不对aabb进行排序）
-    int* primitive_indices;
-    unsigned long long* morton_codes;
+    float4* __restrict__ centroid;
 
-	int2* child_nodes; // .x = left, .y = right
-    int* parent;
+    // 莫顿码排序后的三角形片元和AABB包围盒的索引
+    int* __restrict__ primitive_indices;
+    unsigned long long* __restrict__ morton_codes;
 
-	int* escape_indices; // 用于遍历的逃逸索引
+    int2* __restrict__ child_nodes;
+    int* __restrict__ parent;
+
+    int* __restrict__ escape_indices;
 };
