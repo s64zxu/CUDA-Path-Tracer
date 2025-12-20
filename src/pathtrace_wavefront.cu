@@ -24,7 +24,7 @@
 
 #define ENABLE_VISUALIZATION 1
 
-#define CUDA_ENABLE_ERROR_CHECK 0
+#define CUDA_ENABLE_ERROR_CHECK 1
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #if CUDA_ENABLE_ERROR_CHECK
 // 开启时：调用检查函数
@@ -74,12 +74,11 @@ namespace pathtrace_wavefront
         }
     }
 
-
     static Scene* hst_scene = NULL;
     static GuiDataContainer* hst_gui_data = NULL;
     static glm::vec3* d_image = NULL;
     static Material* d_materials = NULL;
-    static int* d_material_ids = NULL; // used for materials sorting
+    static cudaTextureObject_t* d_texture_objects = NULL;
 
     // mesh data
     static MeshData d_mesh_data;
@@ -137,17 +136,12 @@ namespace pathtrace_wavefront
 
     void InitMaterials(Scene* scene) {
         int pixel_count = scene->state.camera.resolution.x * scene->state.camera.resolution.y;
-
         cudaMalloc(&d_materials, scene->materials.size() * sizeof(Material));
         cudaMemcpy(d_materials, scene->materials.data(), scene->materials.size() * sizeof(Material), cudaMemcpyHostToDevice);
-
-        cudaMalloc(&d_material_ids, pixel_count * sizeof(int));
-        cudaMemset(d_material_ids, 0, pixel_count * sizeof(int));
     }
 
     void FreeMaterials() {
         cudaFree(d_materials);
-        cudaFree(d_material_ids);
     }
 
     void InitSceneGeometry(Scene* scene) {
@@ -176,12 +170,15 @@ namespace pathtrace_wavefront
         std::vector<float4> t_pos; t_pos.reserve(num_verts);
         std::vector<float4> t_nor; t_nor.reserve(num_verts);
         std::vector<float2> t_uv;  t_uv.reserve(num_verts);
+		std::vector<float4> t_tan; t_tan.reserve(num_verts);
 
         for (const auto& v : scene->vertices) {
             t_pos.push_back(make_float4(v.pos.x, v.pos.y, v.pos.z, 1.0f));
             glm::vec3 n = glm::normalize(v.nor);
             t_nor.push_back(make_float4(n.x, n.y, n.z, 0.0f));
             t_uv.push_back(make_float2(v.uv.x, v.uv.y));
+			glm::vec3 tan = glm::normalize(v.tangent);
+			t_tan.push_back(make_float4(tan.x, tan.y, tan.z, 0.0f));
         }
 
         std::vector<int4> t_indices_matid; t_indices_matid.reserve(num_tris);
@@ -199,11 +196,13 @@ namespace pathtrace_wavefront
 
         cudaMalloc((void**)&d_mesh_data.pos, num_verts * sizeof(float4));
         cudaMalloc((void**)&d_mesh_data.nor, num_verts * sizeof(float4));
+		cudaMalloc((void**)&d_mesh_data.tangent, num_verts * sizeof(float4));
         cudaMalloc((void**)&d_mesh_data.uv, num_verts * sizeof(float2));
         cudaMalloc((void**)&d_mesh_data.indices_matid, num_tris * sizeof(int4));
 
         cudaMemcpy(d_mesh_data.pos, t_pos.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.nor, t_nor.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_mesh_data.tangent, t_tan.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.uv, t_uv.data(), num_verts * sizeof(float2), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.indices_matid, t_indices_matid.data(), num_tris * sizeof(int4), cudaMemcpyHostToDevice);
     }
@@ -215,6 +214,7 @@ namespace pathtrace_wavefront
         // Mesh
         cudaFree(d_mesh_data.pos);
         cudaFree(d_mesh_data.nor);
+		cudaFree(d_mesh_data.tangent);
         cudaFree(d_mesh_data.uv);
         cudaFree(d_mesh_data.indices_matid);
     }
@@ -246,6 +246,17 @@ namespace pathtrace_wavefront
 		cudaFree(d_bvh_data.escape_indices);
     }
 
+    void InitTextures(Scene* scene) {
+        int num_textures = scene->texture_handles.size();
+        if (num_textures > 0) {
+            cudaMalloc(&d_texture_objects, num_textures * sizeof(cudaTextureObject_t));
+            cudaMemcpy(d_texture_objects, scene->texture_handles.data(), num_textures * sizeof(cudaTextureObject_t), cudaMemcpyHostToDevice);
+        }
+	}
+    void FreeTextures() {
+        if (d_texture_objects) cudaFree(d_texture_objects);
+    }
+    
     void InitWavefront(int num_paths) {
         size_t size_float4 = num_paths * sizeof(float4);
         size_t size_int = num_paths * sizeof(int);
@@ -340,9 +351,15 @@ namespace pathtrace_wavefront
 
         // 模块化初始化
         InitImageSystem(cam);
+        CHECK_CUDA_ERROR("InitImageSystem");
         InitMaterials(scene);
+        CHECK_CUDA_ERROR("InitMaterials");
         InitSceneGeometry(scene); // Mesh & Light
+        CHECK_CUDA_ERROR("InitSceneGeometry");
         InitBVH(scene);
+        CHECK_CUDA_ERROR("InitBVH");
+        InitTextures(scene);
+        CHECK_CUDA_ERROR("InitTextures");
         InitWavefront(NUM_PATHS); // Path State & Queues
 
         printf("\n====== Path Tracer Scene Information ======\n");
@@ -393,6 +410,7 @@ namespace pathtrace_wavefront
         FreeMaterials();
         FreeSceneGeometry();
         FreeBVH();
+        FreeTextures();
         FreeWavefront();
 
         CHECK_CUDA_ERROR("PathtraceFree");
@@ -519,7 +537,7 @@ namespace pathtrace_wavefront
         float t_min = FLT_MAX;
         float hit_u = 0.0f, hit_v = 0.0f;
 
-        int stack[16];
+        int stack[32];
         int stack_ptr = 0;
         int node_idx = 0;
 
@@ -803,8 +821,23 @@ namespace pathtrace_wavefront
         d_path_state.rng_state[idx] = seed;
     }
 
+    __device__ __forceinline__ glm::vec2 GetInterpolatedUV(const MeshData& mesh_data, int prim_id, float u, float v) {
+        // 获取三角形顶点索引
+        int4 idx_mat = __ldg(&mesh_data.indices_matid[prim_id]);
+        // 读取三个顶点的 UV
+        float2 uv0 = __ldg(&mesh_data.uv[idx_mat.x]);
+        float2 uv1 = __ldg(&mesh_data.uv[idx_mat.y]);
+        float2 uv2 = __ldg(&mesh_data.uv[idx_mat.z]);
+        // 使用重心坐标插值公式: P = (1 - u - v)*P0 + u*P1 + v*P2
+        float final_u = (1.0f - u - v) * uv0.x + u * uv1.x + v * uv2.x;
+        float final_v = (1.0f - u - v) * uv0.y + u * uv1.y + v * uv2.y;
+        return glm::vec2(final_u, final_v);
+    }
+
     __device__ __forceinline__ glm::vec3 GetShadingNormal(
         const MeshData& mesh_data,
+        Material* d_materials,
+		cudaTextureObject_t* d_texture_objects,
         int primitive_id,
         float u,
         float v)
@@ -812,14 +845,38 @@ namespace pathtrace_wavefront
         // 获取三角形的顶点索引 (只读取前3个分量)
         // 注意：这里需要确保 Shading Kernel 能访问到 mesh_data
         int4 idx_mat = __ldg(&mesh_data.indices_matid[primitive_id]);
-
-        // 读取三个顶点的法线
+		int mat_id = idx_mat.w;
+        Material mat = d_materials[mat_id];
         glm::vec3 n0 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.x]));
         glm::vec3 n1 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.y]));
         glm::vec3 n2 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.z]));
-
-        // 插值并归一化
-        return glm::normalize((1.0f - u - v) * n0 + u * n1 + v * n2);
+        float w = (1.0f - u - v);
+        glm::vec3 N = glm::normalize(w * n0 + u * n1 + v * n2);
+        if (mat.normal_tex_id < 0) // 无法线贴图
+        {
+            return N;
+        }
+        else
+        {
+            glm::vec3 tan1 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.x]));
+			glm::vec3 tan2 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.y]));
+			glm::vec3 tan3 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.z]));
+            // 插值切线和法线
+            glm::vec3 T_interp = w * tan1 + u * tan2 + v * tan3;
+            glm::vec3 B = glm::normalize(glm::cross(N, T_interp));
+            glm::vec3 T = glm::cross(B, N);
+            // 获取插值 UV
+            glm::vec2 uv = GetInterpolatedUV(mesh_data, primitive_id, u, v);
+            // 采样法线贴图
+            cudaTextureObject_t tex_obj = d_texture_objects[mat.normal_tex_id];
+            float4 normal_sample = tex2D<float4>(tex_obj, uv.x, uv.y);
+			// 从[0, 1]映射到 [-1, 1]
+            glm::vec3 mapped_normal = glm::vec3(normal_sample.x * 2.0f - 1.0f,
+                normal_sample.y * 2.0f - 1.0f,
+                normal_sample.z * 2.0f - 1.0f);
+            // 切线空间到世界空间
+			return glm::normalize(glm::mat3(T, B, N) * mapped_normal);
+        }
     }
 
     __global__ void SamplePBRMaterialKernel(
@@ -833,7 +890,8 @@ namespace pathtrace_wavefront
         int* d_extension_ray_counter,
         Material* d_materials,
         MeshData d_mesh_data,
-        LightData d_light_data // Modified: Pass Struct
+        LightData d_light_data,
+        cudaTextureObject_t* d_texture_objects
     )
     {
         int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -846,10 +904,28 @@ namespace pathtrace_wavefront
             float4 tp_pdf = d_path_state.throughput_pdf[idx];
             float4 hit_uv = d_path_state.hit_normal[idx];
             int prim_id = d_path_state.hit_geom_id[idx];
-            glm::vec3 N = GetShadingNormal(d_mesh_data, prim_id, hit_uv.x, hit_uv.y); // shading normal
 
-            float ray_t = dir_dist.w;
+            // 获取着色法线
+            glm::vec3 N = GetShadingNormal(d_mesh_data, d_materials, d_texture_objects, prim_id, hit_uv.x, hit_uv.y); // shading normal
+
+            // 获取贴图信息
             int mat_id = d_path_state.material_id[idx];
+            Material material = d_materials[mat_id];
+            glm::vec2 uv = GetInterpolatedUV(d_mesh_data, prim_id, hit_uv.x, hit_uv.y);
+            if (material.diffuse_tex_id >= 0) {
+                float4 texColor = tex2D<float4>(d_texture_objects[material.diffuse_tex_id], uv.x, uv.y);
+                glm::vec3 albedo = glm::vec3(texColor.x, texColor.y, texColor.z);
+                // 绝大多数颜色贴图是 sRGB 存储的，需转换到线性空间参与物理计算
+                material.basecolor *= glm::pow(albedo, glm::vec3(2.2f));
+            }
+            if (material.metallic_roughness_tex_id >= 0) {
+                float4 rmSample = tex2D<float4>(d_texture_objects[material.metallic_roughness_tex_id], uv.x, uv.y);
+                material.roughness *= rmSample.y; // 绿色通道 (G)
+                material.metallic *= rmSample.z; // 蓝色通道 (B)
+            }
+
+            bool do_print = (material.diffuse_tex_id >= 0 && queue_index % 1000 == 0);
+            float ray_t = dir_dist.w;
             int pixel_idx = d_path_state.pixel_idx[idx];
 
             glm::vec3 ray_ori = MakeVec3(ori_pad);
@@ -858,7 +934,7 @@ namespace pathtrace_wavefront
 
             glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
             glm::vec3 wo = -ray_dir;
-            Material material = d_materials[mat_id];
+
             unsigned int local_seed = d_path_state.rng_state[idx];
 
             // 3. NEE (UPDATED CALL)
@@ -890,7 +966,8 @@ namespace pathtrace_wavefront
         int* d_shadow_queue_counter,
         Material* d_materials,
         MeshData d_mesh_data,
-        LightData d_light_data // Modified: Pass Struct
+        LightData d_light_data,
+        cudaTextureObject_t* d_texture_objects
     )
     {
         int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -903,10 +980,20 @@ namespace pathtrace_wavefront
             float4 tp_pdf = d_path_state.throughput_pdf[idx];
             float4 hit_uv = d_path_state.hit_normal[idx];
             int prim_id = d_path_state.hit_geom_id[idx];
-            glm::vec3 N = GetShadingNormal(d_mesh_data, prim_id, hit_uv.x, hit_uv.y); // shading normal
+
+            // 获取着色法线
+            glm::vec3 N = GetShadingNormal(d_mesh_data, d_materials, d_texture_objects, prim_id, hit_uv.x, hit_uv.y); // shading normal
+
+            // 获取贴图信息
+            int mat_id = d_path_state.material_id[idx];
+            Material material = d_materials[mat_id];
+            glm::vec2 uv = GetInterpolatedUV(d_mesh_data, prim_id, hit_uv.x, hit_uv.y);
+            if (material.diffuse_tex_id >= 0) {
+                float4 texColor = tex2D<float4>(d_texture_objects[material.diffuse_tex_id], uv.x, uv.y);
+                material.basecolor *= glm::pow(glm::vec3(texColor.x, texColor.y, texColor.z), glm::vec3(2.2f));
+            }
 
             float ray_t = dir_dist.w;
-            int mat_id = d_path_state.material_id[idx];
             int pixel_idx = d_path_state.pixel_idx[idx];
 
             glm::vec3 ray_ori = MakeVec3(ori_pad);
@@ -916,7 +1003,6 @@ namespace pathtrace_wavefront
 
             glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
             glm::vec3 wo = -ray_dir;
-            Material material = d_materials[mat_id];
             unsigned int local_seed = d_path_state.rng_state[idx];
 
             // 3. NEE (UPDATED CALL)
@@ -945,7 +1031,9 @@ namespace pathtrace_wavefront
         int* d_extension_ray_queue,
         int* d_extension_ray_counter,
         Material* d_materials,
-        MeshData d_mesh_data)
+        MeshData d_mesh_data,
+        cudaTextureObject_t* d_texture_objects
+    )
     {
         int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
 
@@ -960,7 +1048,7 @@ namespace pathtrace_wavefront
 
             float4 hit_uv = d_path_state.hit_normal[idx];
             int prim_id = d_path_state.hit_geom_id[idx];
-            glm::vec3 N = GetShadingNormal(d_mesh_data, prim_id, hit_uv.x, hit_uv.y); // shading normal
+            glm::vec3 N = GetShadingNormal(d_mesh_data, d_materials, d_texture_objects, prim_id, hit_uv.x, hit_uv.y); // shading normal
 
             float ray_t = dir_dist.w;
             // int hit_geom_id = d_path_state.hit_geom_id[idx]; // Unused here
@@ -1214,7 +1302,7 @@ namespace pathtrace_wavefront
                     d_shadow_queue, d_shadow_queue_counter,
                     d_extension_ray_queue, d_extension_ray_counter,
                     d_materials,
-                    d_mesh_data, d_light_data // Modified: Pass Struct
+                    d_mesh_data, d_light_data, d_texture_objects
                     );
                 CHECK_CUDA_ERROR("SamplePBRMaterialKernel");
             }
@@ -1228,7 +1316,7 @@ namespace pathtrace_wavefront
                     trace_depth, d_path_state, d_diffuse_queue, num_diffuse_paths,
                     d_shadow_queue, d_extension_ray_queue, d_extension_ray_counter,
                     d_shadow_queue_counter, d_materials,
-                    d_mesh_data, d_light_data // Modified: Pass Struct
+                    d_mesh_data, d_light_data, d_texture_objects
                     );
                 CHECK_CUDA_ERROR("SampleDiffuseMaterialKernel");
             }
@@ -1240,7 +1328,7 @@ namespace pathtrace_wavefront
                 int blocks = (num_specular_paths + block_size_1d - 1) / block_size_1d;
                 SampleSpecularMaterialKernel << <blocks, block_size_1d >> > (
                     trace_depth, d_path_state, d_specular_queue, num_specular_paths,
-                    d_extension_ray_queue, d_extension_ray_counter, d_materials, d_mesh_data);
+                    d_extension_ray_queue, d_extension_ray_counter, d_materials, d_mesh_data, d_texture_objects);
                 CHECK_CUDA_ERROR("SampleSpecularMaterialKernel");
             }
 

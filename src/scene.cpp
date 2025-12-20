@@ -7,10 +7,10 @@
 #include <unordered_map>
 #include <stdexcept>
 #include "scene.h"
-
-// Define this macro ONLY in scene.cpp
-#define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
+#include "stb_image.h"
+#include "stb_image_write.h"
+
 
 using json = nlohmann::json;
 using namespace std;
@@ -68,7 +68,7 @@ void Scene::loadFromJSON(const std::string& jsonName) {
     try {
         json data = json::parse(f);
 
-        // 1. Load Materials (Optional)
+        // 1. Load Materials from JSON
         std::unordered_map<std::string, uint32_t> MatNameToID;
         if (data.contains("Materials")) {
             loadMaterials(data["Materials"], MatNameToID);
@@ -85,11 +85,62 @@ void Scene::loadFromJSON(const std::string& jsonName) {
         }
 
         this->buildLightCDF();
+		std::cout << "Scene loaded successfully from " << jsonName << std::endl;
     }
     catch (const json::exception& e) {
         std::cerr << "JSON Parsing Error: " << e.what() << std::endl;
         exit(-1);
     }
+}
+
+int Scene::loadTexture(const std::string& path)
+{
+    if (path.empty()) return -1;
+    // 1. 去重检查：如果路径已加载，直接返回现有索引
+    if (texturepath_to_idx.count(path)) {
+        return texturepath_to_idx[path];
+    }
+	// 2. 加载图像数据
+	int width, height, channels;
+	unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
+    if (!pixels) {
+        const char* reason = stbi_failure_reason(); // 获取详细失败原因
+        std::cerr << "Error: Could not load texture at " << path << std::endl;
+        std::cerr << "Reason: " << (reason ? reason : "Unknown reason") << std::endl;
+        return -1;
+    }
+    else
+    {
+		std::cout << "Loaded texture: " << path  << std::endl;
+    }
+	// 3. 创建 CUDA Array 并拷贝数据
+	cudaChannelFormatDesc channel_desc = cudaCreateChannelDesc<uchar4>(); // 存储格式：4 通道，每通道8位无符号整数
+	cudaArray_t cu_array; // CUDA Array是二维数组类型，专门用于纹理优化
+    cudaMallocArray(&cu_array, &channel_desc, width, height);
+    cudaMemcpy2DToArray(cu_array, 0, 0, pixels, width * sizeof(uchar4), width * sizeof(uchar4), height, cudaMemcpyHostToDevice);
+
+	// 4. 配置纹理描述符
+	// 资源描述符
+    struct cudaResourceDesc res_desc = {};
+	res_desc.resType = cudaResourceTypeArray; // 资源类型为二维数组
+	res_desc.res.array.array = cu_array; // 关联 CUDA Array
+	// 纹理描述符
+    struct cudaTextureDesc tex_desc = {};
+	tex_desc.addressMode[0] = cudaAddressModeWrap; // U 方向环绕
+    tex_desc.addressMode[1] = cudaAddressModeWrap;
+	tex_desc.filterMode = cudaFilterModeLinear; // 线性插值过滤
+	tex_desc.readMode = cudaReadModeNormalizedFloat; // 读取为归一化浮点数
+	tex_desc.normalizedCoords = 1; // 使用归一化坐标 [0,1]
+
+    // 5. 创建纹理对象并存储句柄
+    cudaTextureObject_t tex_obj = 0;
+    // 把 资源描述符（绑定的 cudaArray 数据）和纹理描述符（读取规则）打包成一个可使用的纹理对象
+	cudaCreateTextureObject(&tex_obj, &res_desc, &tex_desc, NULL); 
+    int new_idx = (int)texture_handles.size();
+	texture_handles.push_back(tex_obj); // 存储纹理句柄
+    texturepath_to_idx[path] = new_idx; // 建立路径到索引的映射
+    stbi_image_free(pixels);
+    return new_idx;
 }
 
 void Scene::loadMaterials(const json& materialsData, std::unordered_map<std::string, uint32_t>& MatNameToID) {
@@ -105,10 +156,13 @@ void Scene::loadMaterials(const json& materialsData, std::unordered_map<std::str
         newMaterial.roughness = p.value("roughness", 0.5f);
         newMaterial.emittance = p.value("emittance", 0.0f);
         std::string typeStr = p.value("Type", "MicrofacetPBR");
-
         if (typeStr == "IDEAL_DIFFUSE") newMaterial.Type = IDEAL_DIFFUSE;
         else if (typeStr == "IDEAL_SPECULAR") newMaterial.Type = IDEAL_SPECULAR;
         else newMaterial.Type = MicrofacetPBR;
+
+        newMaterial.diffuse_tex_id = -1;
+        newMaterial.normal_tex_id = -1;
+        newMaterial.metallic_roughness_tex_id = -1;
 
         MatNameToID[name] = (uint32_t)materials.size();
         materials.emplace_back(newMaterial);
@@ -167,45 +221,91 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
             int objMaterialStartIdx = (int)this->materials.size();
             bool mtlLoaded = !tinyMaterials.empty();
 
-            // 4. 材质加载逻辑 (优先级处理)
-            if (useForcedMaterial) {
-                // Case 1: 强制指定了材质 -> 忽略 MTL 文件
-                // 这里我们不需要处理 tinyMaterials，因为我们已经有了 forcedMatId
-            }
-            else if (mtlLoaded) {
-                // Case 2: 没强制指定，且有 MTL -> 加载 MTL 到全局材质库
-                for (const auto& tMat : tinyMaterials) {
-                    Material newMat{};
-                    newMat.basecolor = glm::vec3(tMat.diffuse[0], tMat.diffuse[1], tMat.diffuse[2]);
+            // 4. 材质加载逻辑
+           if (!useForcedMaterial && mtlLoaded) {
+               // Case 2: 没强制指定，且有 MTL -> 加载 MTL 到全局材质库
+               for (const auto& tMat : tinyMaterials) {
+                   Material newMat{};
+                   // --- 1. 基础颜色与自发光处理 ---
+                   newMat.basecolor = glm::vec3(tMat.diffuse[0], tMat.diffuse[1], tMat.diffuse[2]);
+                   glm::vec3 emission = glm::vec3(tMat.emission[0], tMat.emission[1], tMat.emission[2]);
+                   if (glm::length(emission) < 0.001f) {
+                       glm::vec3 ambient = glm::vec3(tMat.ambient[0], tMat.ambient[1], tMat.ambient[2]);
+                       if (glm::length(ambient) > 1.0f) emission = ambient;
+                   }
 
-                    // Emission 处理
-                    glm::vec3 emission = glm::vec3(tMat.emission[0], tMat.emission[1], tMat.emission[2]);
-                    if (glm::length(emission) < 0.001f) {
-                        glm::vec3 ambient = glm::vec3(tMat.ambient[0], tMat.ambient[1], tMat.ambient[2]);
-                        if (glm::length(ambient) > 1.0f) emission = ambient;
-                    }
-                    if (glm::length(emission) > 0.001f) {
-                        newMat.emittance = glm::length(emission);
-                        newMat.basecolor = emission;
-                    }
+                   if (glm::length(emission) > 0.001f) {
+                       newMat.emittance = glm::length(emission);
+                       newMat.basecolor = emission; // 如果是光源，BaseColor 通常即为发光色
+                   }
 
-                    // PBR 转换逻辑
-                    if (tMat.shininess >= 0) newMat.roughness = 1.0f - std::min(1.0f, tMat.shininess / 1000.0f);
-                    float specAvg = (tMat.specular[0] + tMat.specular[1] + tMat.specular[2]) / 3.0f;
-                    newMat.metallic = (specAvg > 0.1f) ? 1.0f : 0.0f;
-                    if ((newMat.metallic > 0.9f && newMat.roughness < 0.02f) || tMat.illum == 3) {
-                        newMat.Type = IDEAL_SPECULAR;
-                        newMat.roughness = 0.0f; newMat.metallic = 1.0f;
-                    }
-                    else if (newMat.metallic < 0.1f && newMat.roughness > 0.95f) {
-                        newMat.Type = IDEAL_DIFFUSE;
-                    }
-                    else {
-                        newMat.Type = MicrofacetPBR;
-                    }
-                    this->materials.push_back(newMat);
-                }
-            }
+                   // --- 2. 优先加载贴图 (先于类型判断) ---
+                   bool hasTextures = false;
+
+                   // 加载 Diffuse / Albedo 贴图
+                   if (!tMat.diffuse_texname.empty()) {
+                       newMat.diffuse_tex_id = loadTexture(baseDir + tMat.diffuse_texname);
+                       if (newMat.diffuse_tex_id >= 0) hasTextures = true;
+                   }
+
+                   // 加载 Normal / Bump 贴图
+                   if (!tMat.bump_texname.empty()) {
+                       newMat.normal_tex_id = loadTexture(baseDir + tMat.bump_texname);
+                       if (newMat.normal_tex_id >= 0) hasTextures = true;
+                   }
+                   // 某些导出器可能将法线放在 displacement 或其他字段，如有需要可在此补充
+
+                   // 加载 Roughness / Metallic 贴图 
+                   if (!tMat.roughness_texname.empty()) {
+                       newMat.metallic_roughness_tex_id = loadTexture(baseDir + tMat.roughness_texname);
+                       if (newMat.metallic_roughness_tex_id >= 0) hasTextures = true;
+                   }
+                   //else if (!tMat.metallic_texname.empty()) {
+                   //    newMat.metallic_roughness_tex_id = loadTexture(baseDir + tMat.metallic_texname);
+                   //    if (newMat.metallic_roughness_tex_id >= 0) hasTextures = true;
+                   //}
+
+                   // --- 3. 计算常量 PBR 属性 (作为默认值或混合因子) ---
+                   // 转换 Shininess -> Roughness
+                   if (tMat.shininess >= 0) {
+                       newMat.roughness = 1.0f - std::min(1.0f, tMat.shininess / 1000.0f);
+                   }
+                   else {
+                       newMat.roughness = 0.5f; // 默认值
+                   }
+
+                   // 转换 Specular -> Metallic (简单启发式)
+                   float specAvg = (tMat.specular[0] + tMat.specular[1] + tMat.specular[2]) / 3.0f;
+                   // 如果有镜面高光但没有贴图，通常是非金属；如果是纯白高光，可能是金属。
+                   newMat.metallic = (specAvg > 0.1f) ? 1.0f : 0.0f;
+
+                   // 保持为 Diffuse 
+                   if (newMat.emittance > 0.0f) {
+                       newMat.Type = IDEAL_DIFFUSE; // 或者单独的 EMISSIVE 类型
+                   }
+                   // 如果有任何贴图，强制使用 MicrofacetPBR
+                   else if (hasTextures) {
+                       newMat.Type = MicrofacetPBR;
+                   }
+                   // 仅在没有贴图时，才根据常量进行简化分类
+                   else {
+                       if ((newMat.metallic > 0.9f && newMat.roughness < 0.02f) || tMat.illum == 3) {
+                           newMat.Type = IDEAL_SPECULAR; // 完美镜面
+                           newMat.roughness = 0.0f;
+                           newMat.metallic = 1.0f;
+                       }
+                       else if (newMat.metallic < 0.1f && newMat.roughness > 0.8f) {
+                           // 阈值稍微降低一点，避免稍有光泽的物体变成纯 Lambertian
+                           newMat.Type = IDEAL_DIFFUSE;  // 完美漫反射
+                       }
+                       else {
+                           newMat.Type = MicrofacetPBR;  // 介于两者之间
+                       }
+                   }
+
+                   this->materials.push_back(newMat);
+               }
+           }
             else {
                 // Case 3: 创建默认材质
                 Material defaultMat{};
@@ -216,67 +316,60 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                 this->materials.push_back(defaultMat);
             }
 
-            // 5. 分配材质 ID 到每个面
+		   // 5. 顶点处理与索引构建
             for (const auto& shape : shapes) {
                 size_t index_offset = 0;
                 for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
-                    int fv = shape.mesh.num_face_vertices[f];
-                    if (fv != 3) continue;
+                    if (shape.mesh.num_face_vertices[f] != 3) continue;
 
-                    int finalMatId = 0;
+                    // 获取三角形顶点索引
+                    tinyobj::index_t idxs[3] = {
+                        shape.mesh.indices[index_offset + 0],
+                        shape.mesh.indices[index_offset + 1],
+                        shape.mesh.indices[index_offset + 2]
+                    };
 
-                    if (useForcedMaterial) {
-                        // 优先级 1: 强制覆盖
-                        finalMatId = forcedMatId;
-                    }
-                    else if (mtlLoaded && !shape.mesh.material_ids.empty()) {
-                        // 优先级 2: 使用 MTL 索引
-                        int localMatId = shape.mesh.material_ids[f];
-                        if (localMatId >= 0 && localMatId < tinyMaterials.size()) {
-                            finalMatId = objMaterialStartIdx + localMatId;
+                    // 解析顶点的位置、UV、法线
+                    Vertex verts[3];
+                    for (int i = 0; i < 3; i++) {
+                        glm::vec3 rawP(attrib.vertices[3 * idxs[i].vertex_index + 0], attrib.vertices[3 * idxs[i].vertex_index + 1], attrib.vertices[3 * idxs[i].vertex_index + 2]);
+                        verts[i].pos = glm::vec3(transform * glm::vec4(rawP, 1.0f));
+
+                        if (idxs[i].texcoord_index >= 0)
+                            verts[i].uv = glm::vec2(attrib.texcoords[2 * idxs[i].texcoord_index + 0], 1.0f - attrib.texcoords[2 * idxs[i].texcoord_index + 1]);
+
+                        if (idxs[i].normal_index >= 0) {
+                            glm::vec3 rawN(attrib.normals[3 * idxs[i].normal_index + 0], attrib.normals[3 * idxs[i].normal_index + 1], attrib.normals[3 * idxs[i].normal_index + 2]);
+                            verts[i].nor = glm::normalize(glm::vec3(invTranspose * glm::vec4(rawN, 0.0f)));
                         }
-                        else {
-                            finalMatId = objMaterialStartIdx;
-                        }
-                    }
-                    else {
-                        // 优先级 3: 默认/Fallback
-                        finalMatId = objMaterialStartIdx;
                     }
 
+                    // 计算切线 (Tangent)
+                    glm::vec3 edge1 = verts[1].pos - verts[0].pos;
+                    glm::vec3 edge2 = verts[2].pos - verts[0].pos;
+                    glm::vec2 duv1 = verts[1].uv - verts[0].uv;
+                    glm::vec2 duv2 = verts[2].uv - verts[0].uv;
+
+                    float det = duv1.x * duv2.y - duv2.x * duv1.y;
+                    glm::vec3 tangent(0.0f);
+                    if (std::abs(det) > 1e-6f) {
+                        float invDet = 1.0f / det;
+                        tangent = invDet * (duv2.y * edge1 - duv1.y * edge2);
+                    }
+
+                    // 分配材质 ID 并处理 Unique Vertices
+                    int finalMatId = useForcedMaterial ? forcedMatId : (objMaterialStartIdx + std::max(0, shape.mesh.material_ids[f]));
                     this->materialIds.push_back(finalMatId);
 
-                    //  顶点处理
-                    for (size_t v = 0; v < 3; v++) {
-                        tinyobj::index_t idx = shape.mesh.indices[index_offset + v];
-                        Vertex vert{};
-
-                        // Pos, Nor, UV 读取逻辑与之前完全一致...
-                        glm::vec3 rawPos(attrib.vertices[3 * idx.vertex_index + 0], attrib.vertices[3 * idx.vertex_index + 1], attrib.vertices[3 * idx.vertex_index + 2]);
-                        vert.pos = glm::vec3(transform * glm::vec4(rawPos, 1.0f));
-
-                        if (idx.normal_index >= 0) {
-                            glm::vec3 rawNor(attrib.normals[3 * idx.normal_index + 0], attrib.normals[3 * idx.normal_index + 1], attrib.normals[3 * idx.normal_index + 2]);
-                            vert.nor = glm::normalize(glm::vec3(invTranspose * glm::vec4(rawNor, 0.0f)));
+                    for (int i = 0; i < 3; i++) {
+                        verts[i].tangent = tangent; // 赋予切线
+                        if (uniqueVertices.count(verts[i]) == 0) {
+                            uniqueVertices[verts[i]] = (int32_t)this->vertices.size();
+                            this->vertices.push_back(verts[i]);
                         }
-                        else vert.nor = glm::vec3(0.0f);
-
-                        if (idx.texcoord_index >= 0) {
-                            vert.uv = glm::vec2(attrib.texcoords[2 * idx.texcoord_index + 0], 1.0f - attrib.texcoords[2 * idx.texcoord_index + 1]);
-                        }
-                        else vert.uv = glm::vec2(0.0f);
-
-                        if (uniqueVertices.count(vert) == 0) {
-                            int32_t newIndex = static_cast<int32_t>(this->vertices.size());
-                            uniqueVertices[vert] = newIndex;
-                            this->vertices.push_back(vert);
-                            this->indices.push_back(newIndex);
-                        }
-                        else {
-                            this->indices.push_back(uniqueVertices[vert]);
-                        }
+                        this->indices.push_back(uniqueVertices[verts[i]]);
                     }
-                    index_offset += fv;
+                    index_offset += 3;
                 }
             }
             std::cout << "Loaded mesh: " << filename << (useForcedMaterial ? " [Overridden Material]" : " [Using MTL]") << std::endl;
@@ -323,7 +416,7 @@ void Scene::loadCamera(const json& cameraData) {
 }
 
 void Scene::buildLightCDF() {
-    std::cout << "Building Mesh Light CDF..." << std::endl;
+    std::cout << "Building Mesh Light CDF" << std::endl;
     lightInfo.total_area = 0.0f;
     lightInfo.tri_idx.clear();
     lightInfo.cdf.clear();

@@ -23,6 +23,7 @@ struct Vertex {
     glm::vec3 pos;
     glm::vec3 nor;
     glm::vec2 uv;
+	glm::vec3 tangent;
 
     // Equality operator for hash map
     bool operator==(const Vertex& other) const {
@@ -34,11 +35,13 @@ class Scene
 {
 private:
     ifstream fp_in;
+    int loadTexture(const std::string& path); // 负责纹理贴图的加载、去重和GPU资源创建
     void loadFromJSON(const std::string& jsonName);
     void loadMaterials(const nlohmann::json& data, std::unordered_map<std::string, uint32_t>& matMap);
     void loadObjects(const nlohmann::json& data, const std::unordered_map<std::string, uint32_t>& matMap);
     void loadCamera(const nlohmann::json& data);
     void buildLightCDF();
+    string json_name;
 
 public:
     Scene(string filename);
@@ -53,4 +56,9 @@ public:
     std::vector<int32_t> indices;       // Index Buffer (Triangles)
     std::vector<int32_t> materialIds;   // Material ID per triangle (indices.size()/3)
 	LightInfo lightInfo;                // Light sampling info
+    // Textures data
+	std::vector<cudaTextureObject_t> texture_handles; // GPU 纹理句柄
+	std::unordered_map<string, int> texturepath_to_idx; // 纹理路径到索引的映射
+
+    void InitScene();
 };

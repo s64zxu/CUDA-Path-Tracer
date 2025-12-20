@@ -166,14 +166,63 @@ namespace pathtrace_megakernel
         return false;
     }
 
+    // 新增：获取插值UV
+    __device__ __forceinline__ glm::vec2 GetInterpolatedUV(const MeshData& mesh_data, int prim_id, float u, float v) {
+        int4 idx_mat = __ldg(&mesh_data.indices_matid[prim_id]);
+        float2 uv0 = __ldg(&mesh_data.uv[idx_mat.x]);
+        float2 uv1 = __ldg(&mesh_data.uv[idx_mat.y]);
+        float2 uv2 = __ldg(&mesh_data.uv[idx_mat.z]);
+        float final_u = (1.0f - u - v) * uv0.x + u * uv1.x + v * uv2.x;
+        float final_v = (1.0f - u - v) * uv0.y + u * uv1.y + v * uv2.y;
+        return glm::vec2(final_u, final_v);
+    }
+
+    // 修改：支持法线贴图采样
     __device__ __forceinline__ glm::vec3 GetShadingNormal(
-        const MeshData& mesh_data, int primitive_id, float u, float v)
+        const MeshData& mesh_data,
+        Material* d_materials,
+        cudaTextureObject_t* d_texture_objects,
+        int primitive_id,
+        float u,
+        float v)
     {
         int4 idx_mat = __ldg(&mesh_data.indices_matid[primitive_id]);
+        int mat_id = idx_mat.w;
+        Material mat = d_materials[mat_id];
+
         glm::vec3 n0 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.x]));
         glm::vec3 n1 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.y]));
         glm::vec3 n2 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.z]));
-        return glm::normalize((1.0f - u - v) * n0 + u * n1 + v * n2);
+        float w = (1.0f - u - v);
+        glm::vec3 N = glm::normalize(w * n0 + u * n1 + v * n2);
+
+        if (mat.normal_tex_id < 0)
+        {
+            return N;
+        }
+        else
+        {
+            // 有法线贴图，计算切线空间
+            glm::vec3 tan1 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.x]));
+            glm::vec3 tan2 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.y]));
+            glm::vec3 tan3 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.z]));
+
+            glm::vec3 T_interp = w * tan1 + u * tan2 + v * tan3;
+            glm::vec3 B = glm::normalize(glm::cross(N, T_interp));
+            glm::vec3 T = glm::cross(B, N);
+
+            glm::vec2 uv = GetInterpolatedUV(mesh_data, primitive_id, u, v);
+
+            cudaTextureObject_t tex_obj = d_texture_objects[mat.normal_tex_id];
+            float4 normal_sample = tex2D<float4>(tex_obj, uv.x, uv.y);
+
+            // [0, 1] -> [-1, 1]
+            glm::vec3 mapped_normal = glm::vec3(normal_sample.x * 2.0f - 1.0f,
+                normal_sample.y * 2.0f - 1.0f,
+                normal_sample.z * 2.0f - 1.0f);
+
+            return glm::normalize(glm::mat3(T, B, N) * mapped_normal);
+        }
     }
 
     // =========================================================================================
@@ -182,14 +231,15 @@ namespace pathtrace_megakernel
     __global__ void MegakernelPathTrace(
         glm::vec3* d_image,
         int* d_sample_count,
-        unsigned long long* d_total_rays, // <--- 新增：用于累积光线计数
+        unsigned long long* d_total_rays,
         int iter,
         int max_depth,
         Camera cam,
         Material* d_materials,
         LightData light_data,
         MeshData mesh_data,
-        LBVHData bvh_data
+        LBVHData bvh_data,
+        cudaTextureObject_t* d_texture_objects // 新增参数
     )
     {
         int x = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -198,7 +248,7 @@ namespace pathtrace_megakernel
 
         if (x >= cam.resolution.x || y >= cam.resolution.y) return;
 
-        // 线程局部光线计数器 (避免频繁 atomicAdd 造成的性能损失)
+        // 线程局部光线计数器
         int thread_ray_count = 0;
 
         // 1. Initialize RNG
@@ -241,7 +291,25 @@ namespace pathtrace_megakernel
             int mat_id = idx_mat.w;
             Material material = d_materials[mat_id];
 
-            glm::vec3 N_shading = GetShadingNormal(mesh_data, hit.geom_id, hit.u, hit.v);
+            // 1. 计算纹理坐标
+            glm::vec2 uv = GetInterpolatedUV(mesh_data, hit.geom_id, hit.u, hit.v);
+
+            // 2. 获取法线 (包含法线贴图处理)
+            glm::vec3 N_shading = GetShadingNormal(mesh_data, d_materials, d_texture_objects, hit.geom_id, hit.u, hit.v);
+
+            // 3. 采样其他贴图 (BaseColor, Metallic, Roughness)
+            if (material.diffuse_tex_id >= 0) {
+                float4 texColor = tex2D<float4>(d_texture_objects[material.diffuse_tex_id], uv.x, uv.y);
+                glm::vec3 albedo = glm::vec3(texColor.x, texColor.y, texColor.z);
+                // sRGB -> Linear
+                material.basecolor *= glm::pow(albedo, glm::vec3(2.2f));
+            }
+            if (material.metallic_roughness_tex_id >= 0) {
+                float4 rmSample = tex2D<float4>(d_texture_objects[material.metallic_roughness_tex_id], uv.x, uv.y);
+                material.roughness *= rmSample.y; // Green channel
+                material.metallic *= rmSample.z;  // Blue channel
+            }
+
             glm::vec3 intersect_point = ray.origin + ray.direction * hit.t;
             glm::vec3 wo = -ray.direction;
 
@@ -410,6 +478,7 @@ namespace pathtrace_megakernel
 
     // Scene Data
     static Material* d_materials = NULL;
+    static cudaTextureObject_t* d_texture_objects = NULL; // 新增纹理对象指针
     static MeshData d_mesh_data;
     static LBVHData d_bvh_data;
     static LightData d_light_data;
@@ -431,7 +500,21 @@ namespace pathtrace_megakernel
     void FreeImageSystem() {
         cudaFree(d_image);
         cudaFree(d_pixel_sample_count);
-        cudaFree(d_total_rays_executed); // 释放计数器
+        cudaFree(d_total_rays_executed);
+    }
+
+    // 新增：纹理初始化
+    void InitTextures(Scene* scene) {
+        int num_textures = scene->texture_handles.size();
+        if (num_textures > 0) {
+            cudaMalloc(&d_texture_objects, num_textures * sizeof(cudaTextureObject_t));
+            cudaMemcpy(d_texture_objects, scene->texture_handles.data(), num_textures * sizeof(cudaTextureObject_t), cudaMemcpyHostToDevice);
+        }
+    }
+
+    // 新增：纹理释放
+    void FreeTextures() {
+        if (d_texture_objects) cudaFree(d_texture_objects);
     }
 
     void InitSceneData(Scene* scene) {
@@ -459,11 +542,16 @@ namespace pathtrace_megakernel
 
         std::vector<float4> t_pos; t_pos.reserve(num_verts);
         std::vector<float4> t_nor; t_nor.reserve(num_verts);
+        std::vector<float2> t_uv;  t_uv.reserve(num_verts); // 新增 UV
+        std::vector<float4> t_tan; t_tan.reserve(num_verts); // 新增 Tangent
 
         for (const auto& v : scene->vertices) {
             t_pos.push_back(make_float4(v.pos.x, v.pos.y, v.pos.z, 1.0f));
             glm::vec3 n = glm::normalize(v.nor);
             t_nor.push_back(make_float4(n.x, n.y, n.z, 0.0f));
+            t_uv.push_back(make_float2(v.uv.x, v.uv.y));
+            glm::vec3 tan = glm::normalize(v.tangent);
+            t_tan.push_back(make_float4(tan.x, tan.y, tan.z, 0.0f));
         }
 
         std::vector<int4> t_indices_matid; t_indices_matid.reserve(num_tris);
@@ -474,12 +562,17 @@ namespace pathtrace_megakernel
 
         d_mesh_data.num_vertices = (int)num_verts;
         d_mesh_data.num_triangles = (int)num_tris;
+
         cudaMalloc((void**)&d_mesh_data.pos, num_verts * sizeof(float4));
         cudaMalloc((void**)&d_mesh_data.nor, num_verts * sizeof(float4));
+        cudaMalloc((void**)&d_mesh_data.tangent, num_verts * sizeof(float4)); // Malloc Tangent
+        cudaMalloc((void**)&d_mesh_data.uv, num_verts * sizeof(float2));      // Malloc UV
         cudaMalloc((void**)&d_mesh_data.indices_matid, num_tris * sizeof(int4));
 
         cudaMemcpy(d_mesh_data.pos, t_pos.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.nor, t_nor.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_mesh_data.tangent, t_tan.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice); // Copy Tangent
+        cudaMemcpy(d_mesh_data.uv, t_uv.data(), num_verts * sizeof(float2), cudaMemcpyHostToDevice);       // Copy UV
         cudaMemcpy(d_mesh_data.indices_matid, t_indices_matid.data(), num_tris * sizeof(int4), cudaMemcpyHostToDevice);
 
         // BVH
@@ -515,6 +608,8 @@ namespace pathtrace_megakernel
         cudaFree(d_light_data.cdf);
         cudaFree(d_mesh_data.pos);
         cudaFree(d_mesh_data.nor);
+        cudaFree(d_mesh_data.tangent); // Free Tangent
+        cudaFree(d_mesh_data.uv);      // Free UV
         cudaFree(d_mesh_data.indices_matid);
         cudaFree(d_bvh_data.aabb_min);
         cudaFree(d_bvh_data.aabb_max);
@@ -528,6 +623,7 @@ namespace pathtrace_megakernel
         hst_scene = scene;
         InitImageSystem(scene->state.camera);
         InitSceneData(scene);
+        InitTextures(scene); // 初始化纹理
         printf("[MegaKernel] Init Complete.\n");
         checkCUDAError("PathtraceInit");
     }
@@ -536,6 +632,7 @@ namespace pathtrace_megakernel
     {
         FreeImageSystem();
         FreeSceneData();
+        FreeTextures(); // 释放纹理
         checkCUDAError("PathtraceFree");
     }
 
@@ -569,14 +666,15 @@ namespace pathtrace_megakernel
         MegakernelPathTrace << <gridSize, blockSize >> > (
             d_image,
             d_pixel_sample_count,
-            d_total_rays_executed, // 传入计数器指针
+            d_total_rays_executed,
             iter,
             trace_depth,
             cam,
             d_materials,
             d_light_data,
             d_mesh_data,
-            d_bvh_data
+            d_bvh_data,
+            d_texture_objects // 传入纹理对象
             );
 
         cudaEventRecord(stop);

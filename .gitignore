@@ -3,6 +3,7 @@ Debug/
 Release/
 build/
 bin/
+scenes/
 *.exe
 *.lib
 *.dll

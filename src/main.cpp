@@ -1,6 +1,8 @@
 #include "main.h"
 #include "preview.h"
 #include <cstring>
+#include "json.hpp" // 确保包含 json 库
+using json = nlohmann::json;
 
 #define ENABLE_VISUALIZATION 1
 
@@ -38,8 +40,8 @@ extern GLFWwindow* window;
 //-------------MAIN--------------
 //-------------------------------
 
-using namespace pathtrace_wavefront;
-//using namespace pathtrace_megakernel;
+//using namespace pathtrace_wavefront;
+using namespace pathtrace_megakernel;
 
 
 void processInput(GLFWwindow* window);
@@ -56,9 +58,41 @@ int main(int argc, char** argv)
     }
 
     const char* sceneFile = argv[1];
+    {
+        std::ifstream f(sceneFile);
+        if (f.is_open()) {
+            json data = json::parse(f);
+            // 假设 JSON 结构是 data["Camera"]["RES"] = [width, height]
+            if (data.contains("Camera") && data["Camera"].contains("RES")) {
+                width = data["Camera"]["RES"][0];
+                height = data["Camera"]["RES"][1];
+            }
+            else {
+                // 默认兜底值，防止崩坏
+                width = 800;
+                height = 800;
+                printf("Warning: Could not parse resolution from JSON, using default 800x800\n");
+            }
+        }
+        else {
+            printf("Error: Could not open scene file for peeking.\n");
+            return 1;
+        }
+    } 
 
-    // 加载场景
+#if ENABLE_VISUALIZATION
+
+    init();
+#else
+    // HEADLESS 模式：没有 init()，我们需要手动设置 CUDA Flags
+    // 这步非常关键，否则后面 new Scene 时会用默认 Flags 初始化，可能导致性能问题或错误
+    cudaSetDevice(0);
+    cudaSetDeviceFlags(cudaDeviceScheduleSpin | cudaDeviceMapHost);
+    cudaFree(0); // 强制初始化上下文
+#endif
     scene = new Scene(sceneFile);
+
+    // 更新全局指针
     renderState = &scene->state;
     Camera& cam = renderState->camera;
     width = cam.resolution.x;
@@ -70,7 +104,7 @@ int main(int argc, char** argv)
     // ============================
     guiData = new GuiDataContainer();
 
-    // 1. 同步位置
+    // 1. 同步 GUI 所需的摄像机参数
     cameraPosition = cam.position;
 
     // 2. 根据场景定义的初始 view 向量反推 yaw 和 pitch
@@ -81,10 +115,7 @@ int main(int argc, char** argv)
     camchanged = false;
     iteration = 0;
 
-    // 初始化 CUDA 和 GL 窗口
-    init();
-
-    // 初始化 UI
+    // 初始化 UI (此时 Window 和 Scene 都 ready 了)
     InitImguiData(guiData);
     InitDataContainer(guiData);
 
@@ -114,6 +145,9 @@ int main(int argc, char** argv)
     saveImage();
 
     PathtraceFree();
+
+    // 清理资源
+    delete scene;
     cudaDeviceReset();
     printf("Done. Image saved to disk.\n");
 #endif

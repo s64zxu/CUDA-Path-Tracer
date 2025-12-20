@@ -35,6 +35,10 @@ struct Material
     float roughness;
     float emittance; // if it's a light soure
     MaterialType Type;
+	// 纹理贴图索引 (-1 表示无贴图)
+    int diffuse_tex_id = -1;
+    int normal_tex_id = -1;
+	int metallic_roughness_tex_id = -1;
 };
 
 struct Camera
@@ -123,6 +127,9 @@ struct MeshData {
 
     // .xyz = nor, .w = 0.0f
     float4* __restrict__ nor;
+
+	// .xyz = tangent, .w = 0.0f
+    float4* __restrict__ tangent;
 
     // .xy = uv
     float2* __restrict__ uv;

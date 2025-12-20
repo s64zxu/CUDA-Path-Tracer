@@ -9,7 +9,7 @@
   },
   "Objects": [
     {
-      "FILE": "../scenes/combined.obj",
+      "FILE": "../scenes/Astartes/Astartes_Scene.obj",
       "MATERIAL": "none",
       "TRANS": [ 0, 0, 0 ],
       "ROTAT": [ 0, 0, 0 ],
@@ -17,13 +17,13 @@
     }
   ],
   "Camera": {
-    "RES": [ 800, 800 ],
+    "RES": [ 800, 600 ],
     "FOVY": 27.8,
     "ITERATIONS": 5000,
     "DEPTH": 5,
-    "FILE": "cornell_bunny_mirror.png",
-    "EYE": [ 278, 273, -800 ],
-    "LOOKAT": [ 278, 273, 0 ],
+    "FILE": "Astartes_Scene.png",
+    "EYE": [ 0.00, 152.85, 427.00 ],
+    "LOOKAT": [ 0.00, 152.85, 1.64 ],
     "UP": [ 0, 1, 0 ]
   }
 }
