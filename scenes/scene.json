@@ -1,4 +1,7 @@
 {
+  "Environment Texture": {
+    "FILE": "../scenes/EnvMap/river_alcove_2k.hdr"
+  },
   "Materials": {
     "mirror": {
       "Type": "IDEAL_SPECULAR",
@@ -9,7 +12,14 @@
   },
   "Objects": [
     {
-      "FILE": "../scenes/Astartes/Astartes_Scene.obj",
+      "FILE": "../scenes/Astartes/Astartes.obj",
+      "MATERIAL": "none",
+      "TRANS": [ 278, 0, 280 ],
+      "ROTAT": [ 0, 180, 0 ],
+      "SCALE": [ 2.0, 2.0, 2.0 ]
+    },
+    {
+      "FILE": "../scenes/floor.obj",
       "MATERIAL": "none",
       "TRANS": [ 0, 0, 0 ],
       "ROTAT": [ 0, 0, 0 ],
@@ -21,9 +31,9 @@
     "FOVY": 27.8,
     "ITERATIONS": 5000,
     "DEPTH": 5,
-    "FILE": "Astartes_Scene.png",
-    "EYE": [ 0.00, 152.85, 427.00 ],
-    "LOOKAT": [ 0.00, 152.85, 1.64 ],
+    "FILE": "Final_Render.png",
+    "EYE": [ 278, 273, -800 ],
+    "LOOKAT": [ 278, 273, 0 ],
     "UP": [ 0, 1, 0 ]
   }
 }

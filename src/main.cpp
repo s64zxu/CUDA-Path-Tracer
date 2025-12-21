@@ -40,8 +40,8 @@ extern GLFWwindow* window;
 //-------------MAIN--------------
 //-------------------------------
 
-//using namespace pathtrace_wavefront;
-using namespace pathtrace_megakernel;
+using namespace pathtrace_wavefront;
+//using namespace pathtrace_megakernel;
 
 
 void processInput(GLFWwindow* window);

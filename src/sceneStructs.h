@@ -12,35 +12,6 @@ enum MaterialType
     IDEAL_SPECULAR
 };
 
-struct Ray
-{
-    glm::vec3 origin;
-    glm::vec3 direction;
-};
-
-struct PathSegment
-{
-    Ray ray;
-    glm::vec3 color;
-    int pixelIndex;
-    int remainingBounces;
-    float lastPdf;
-};
-
-
-struct Material
-{
-    glm::vec3 basecolor;
-    float metallic;
-    float roughness;
-    float emittance; // if it's a light soure
-    MaterialType Type;
-	// 纹理贴图索引 (-1 表示无贴图)
-    int diffuse_tex_id = -1;
-    int normal_tex_id = -1;
-	int metallic_roughness_tex_id = -1;
-};
-
 struct Camera
 {
     glm::ivec2 resolution;
@@ -62,6 +33,52 @@ struct RenderState
     std::string imageName;
 };
 
+struct Ray
+{
+    glm::vec3 origin;
+    glm::vec3 direction;
+};
+
+struct PathSegment
+{
+    Ray ray;
+    glm::vec3 color;
+    int pixelIndex;
+    int remainingBounces;
+    float lastPdf;
+};
+
+struct Material
+{
+    glm::vec3 basecolor;
+    float metallic;
+    float roughness;
+    float emittance; // if it's a light soure
+    MaterialType Type;
+	// 纹理贴图索引 (-1 表示无贴图)
+    int diffuse_tex_id = -1;
+    int normal_tex_id = -1;
+	int metallic_roughness_tex_id = -1;
+};
+
+struct EnvMapAliasTable {
+    float* __restrict__ probs;    // 概率阈值数组，大小为像素总数 N
+    int* __restrict__ aliases;  // 别名索引数组，大小为像素总数 N
+    int pdf_map_id = -1;  // 用于 MIS 的 PDF 查找表
+    int env_tex_id = -1; // 原始 HDR 贴图索引
+    int width;
+    int height;
+};
+
+struct LightData {
+    int* tri_idx;       // 发光三角形的索引
+    float* cdf;         // 光源采样的 CDF
+    int num_lights;     // 光源总数 (Changed from int* to int)
+    float total_area;   // 光源总面积 (Changed from float* to float)
+};
+
+
+
 // Use with a corresponding PathSegment to do:
 // 1) color contribution computation
 // 2) BSDF evaluation: generate a new ray
@@ -79,34 +96,24 @@ struct PathState
     // 核心光线数据 (float4 对齐)
     // .xyz = origin, .w = padding (或 t_min)
     float4* ray_ori;
-
     // .xyz = direction, .w = ray_t (击中距离 / t_max)
     // 将 ray_t 合并在此，读取光线时顺便读取距离
     float4* ray_dir_dist;
-
     // 击中信息
     // .xyz = shading normal, .w = hit_u (或 padding)
     float4* hit_normal;
-
     // 材质与几何ID (分开存，因为不是所有阶段都需要读取)
     int* hit_geom_id;
     int* material_id;
-
     // 路径状态
     // .xyz = throughput color, .w = last_pdf (合并 PDF)
     float4* throughput_pdf;
-
     int* pixel_idx;
     int* remaining_bounces;
     unsigned int* rng_state;
 };
 
-struct LightData {
-    int* tri_idx;       // 发光三角形的索引
-    float* cdf;         // 光源采样的 CDF
-    int num_lights;     // 光源总数 (Changed from int* to int)
-    float total_area;   // 光源总面积 (Changed from float* to float)
-};
+
 
 struct ShadowQueue
 {
@@ -124,19 +131,14 @@ struct ShadowQueue
 struct MeshData {
     // .xyz = pos, .w = 1.0f
     float4* __restrict__ pos;
-
     // .xyz = nor, .w = 0.0f
     float4* __restrict__ nor;
-
 	// .xyz = tangent, .w = 0.0f
     float4* __restrict__ tangent;
-
     // .xy = uv
     float2* __restrict__ uv;
-
     // .x=v0, .y=v1, .z=v2, .w=mat_id
     int4* __restrict__ indices_matid;
-
     int num_vertices;
     int num_triangles;
 };

@@ -78,7 +78,11 @@ namespace pathtrace_wavefront
     static GuiDataContainer* hst_gui_data = NULL;
     static glm::vec3* d_image = NULL;
     static Material* d_materials = NULL;
+    // texture data
     static cudaTextureObject_t* d_texture_objects = NULL;
+
+    // hdr data
+    static EnvMapAliasTable d_env_alias_table;
 
     // mesh data
     static MeshData d_mesh_data;
@@ -159,8 +163,8 @@ namespace pathtrace_wavefront
         }
         else {
 			// todo： no emissive light handling
-            std::cerr << "[ERROR] No emissive materials found." << std::endl;
-            std::exit(1);
+            std::cout << "[ERROR] No emissive materials found." << std::endl;
+            //std::exit(1);
         }
 
         // 2. Mesh Data
@@ -253,6 +257,7 @@ namespace pathtrace_wavefront
             cudaMemcpy(d_texture_objects, scene->texture_handles.data(), num_textures * sizeof(cudaTextureObject_t), cudaMemcpyHostToDevice);
         }
 	}
+    
     void FreeTextures() {
         if (d_texture_objects) cudaFree(d_texture_objects);
     }
@@ -340,6 +345,23 @@ namespace pathtrace_wavefront
         cudaFree(d_shadow_queue_counter);
     }
 
+    void InitEnvAliasTable(Scene* scene)
+    {
+        d_env_alias_table.width = scene->env_map.width;
+        d_env_alias_table.height = scene->env_map.height;
+        d_env_alias_table.pdf_map_id = scene->env_map.pdf_map_id;
+        d_env_alias_table.env_tex_id = scene->env_map.env_tex_id;
+        int num_pixels = d_env_alias_table.width * d_env_alias_table.height;
+        cudaMalloc(&d_env_alias_table.aliases, num_pixels * sizeof(int));
+        cudaMalloc(&d_env_alias_table.probs, num_pixels * sizeof(float));
+    }
+
+    void FreeEnvAliasTable()
+    {
+        cudaFree(d_env_alias_table.aliases);
+        cudaFree(d_env_alias_table.probs);
+    }
+
     void PathtraceInit(Scene* scene)
     {
         hst_scene = scene;
@@ -360,6 +382,8 @@ namespace pathtrace_wavefront
         CHECK_CUDA_ERROR("InitBVH");
         InitTextures(scene);
         CHECK_CUDA_ERROR("InitTextures");
+        InitEnvAliasTable(scene);
+        CHECK_CUDA_ERROR("InitEnvAliasTable");
         InitWavefront(NUM_PATHS); // Path State & Queues
 
         printf("\n====== Path Tracer Scene Information ======\n");
@@ -411,6 +435,7 @@ namespace pathtrace_wavefront
         FreeSceneGeometry();
         FreeBVH();
         FreeTextures();
+        FreeEnvAliasTable();
         FreeWavefront();
 
         CHECK_CUDA_ERROR("PathtraceFree");
@@ -924,7 +949,7 @@ namespace pathtrace_wavefront
                 material.metallic *= rmSample.z; // 蓝色通道 (B)
             }
 
-            bool do_print = (material.diffuse_tex_id >= 0 && queue_index % 1000 == 0);
+
             float ray_t = dir_dist.w;
             int pixel_idx = d_path_state.pixel_idx[idx];
 
@@ -1084,7 +1109,9 @@ namespace pathtrace_wavefront
         PathState d_path_state,
         glm::vec3* d_image,
         Material* d_materials,
-        LightData d_light_data, // Modified: Pass Struct
+        LightData d_light_data, 
+        EnvMapAliasTable d_env_alias_table, 
+        cudaTextureObject_t* d_texture_objects, 
         int* d_pbr_queue, int* d_pbr_counter,
         int* d_diffuse_queue, int* d_diffuse_counter,
         int* d_specular_queue, int* d_specular_counter,
@@ -1104,10 +1131,55 @@ namespace pathtrace_wavefront
 
             // Check if ray is terminated
             int hit_geom_id = d_path_state.hit_geom_id[idx];
-
+            
+            // todo: 当miss时采样环境贴图，写入image
             // Case 1: Miss or max bounces reached
-            if (hit_geom_id == -1 || d_path_state.remaining_bounces[idx] < 0) {
-                // Optional: Accumulate environment map
+
+            if (hit_geom_id == -1) {
+                if (d_env_alias_table.env_tex_id >= 0) {
+                    float4 ray_dir_dist = d_path_state.ray_dir_dist[idx];
+                    glm::vec3 dir = glm::normalize(MakeVec3(ray_dir_dist));
+
+                    // 1. 方向转 UV (Spherical Coordinates)
+                    float phi = atan2(dir.z, dir.x);
+                    if (phi < 0) phi += TWO_PI;
+                    float theta = acos(glm::clamp(dir.y, -1.0f, 1.0f));
+
+                    float u = phi * INV_TWO_PI;
+                    float v = theta * INV_PI;
+
+                    // 2. 采样环境光颜色 (Radiance)
+                    cudaTextureObject_t env_tex = d_texture_objects[d_env_alias_table.env_tex_id];
+                    float4 envColor4 = tex2D<float4>(env_tex, u, v);
+                    glm::vec3 envColor = glm::vec3(envColor4.x, envColor4.y, envColor4.z);
+
+                    // 3. 计算 MIS 权重
+                    float mis_weight = 1.0f;
+                    if (d_path_state.remaining_bounces[idx] != trace_depth) {
+                        // A. 获取 BSDF 采样到该方向的 PDF (上一跳计算并存下来的)
+                        float pdf_bsdf = last_pdf;
+
+                        // B. 获取环境光采样选中该方向的 PDF
+                        // 注意：预计算的 pdf_map 已经是 Solid Angle PDF 了
+                        cudaTextureObject_t pdf_tex = d_texture_objects[d_env_alias_table.pdf_map_id];
+                        float pdf_env = tex2D<float>(pdf_tex, u, v);
+                        if (pdf_bsdf > 1e10f) {
+                            mis_weight = 1.0f;
+                        }
+                        else {
+                            // D. Power Heuristic: w = p_bsdf^2 / (p_bsdf^2 + p_env^2)
+                            mis_weight = (pdf_bsdf * pdf_bsdf) / (pdf_bsdf * pdf_bsdf + pdf_env * pdf_env + 1e-6f);
+                        }
+                    }
+
+                    // 4. 累积最终颜色
+                    // L += Throughput * Li * Weight
+                    AtomicAddVec3(&(d_image[pixel_idx]), throughput * envColor * mis_weight);
+                }
+                terminated = true;
+            }
+            // Case 2: Max bounces reached
+            else if (d_path_state.remaining_bounces[idx] < 0) {
                 terminated = true;
             }
 
@@ -1280,7 +1352,9 @@ namespace pathtrace_wavefront
                 d_path_state,
                 d_image,
                 d_materials,
-                d_light_data, // Modified: Pass struct
+                d_light_data, 
+                d_env_alias_table,  
+                d_texture_objects,
                 d_pbr_queue, d_pbr_counter,
                 d_diffuse_queue, d_diffuse_counter,
                 d_specular_queue, d_specular_counter,

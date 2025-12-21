@@ -320,3 +320,46 @@ __host__ __device__ void SampleLight(
     pdf_area = 1.0f / total_light_area;
     light_idx = tri_index;
 }
+
+__device__ float3 sampleEnvironmentMap(
+    const EnvMapAliasTable env,
+    cudaTextureObject_t* d_texture_objects,
+    float2 rnd,
+    float& pdf)
+{
+    int N = env.width * env.height;
+
+    // 1. 别名表选择像素索引 (O(1))
+    float u = rnd.x * N;
+    int idx = min((int)u, N - 1);
+    float xi = u - idx;
+
+    float prob = __ldg(&env.probs[idx]);
+    int pixel_idx = (xi < prob) ? idx : __ldg(&env.aliases[idx]);
+
+    // 2. 将索引转为 UV 坐标
+    int py = pixel_idx / env.width;
+    int px = pixel_idx % env.width;
+
+    // 加上 0.5 偏移到像素中心，避免走样
+    float u_coord = (px + 0.5f) / env.width;
+    float v_coord = (py + 0.5f) / env.height;
+
+    // 3. 查表获取预计算好的 PDF
+    // 使用 tex2D 获取线性插值后的平滑 PDF
+    cudaTextureObject_t pdf_map_obj = d_texture_objects[env.pdf_map_id];
+    pdf = tex2D<float>(pdf_map_obj, u_coord, v_coord);
+
+    // 4. UV 转球面坐标 (Spherical Coordinates)
+    float phi = u_coord * 2.0f * PI;
+    float theta = v_coord * PI;
+
+    // 5. 球面坐标转笛卡尔方向 (Cartesian Direction)
+    // 假设 Y 为 Up 轴
+    float3 dir;
+    dir.x = sinf(theta) * cosf(phi);
+    dir.y = cosf(theta);
+    dir.z = sinf(theta) * sinf(phi);
+
+    return dir;
+}

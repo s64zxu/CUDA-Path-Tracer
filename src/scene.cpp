@@ -10,7 +10,7 @@
 #include "tiny_obj_loader.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
-
+#include <cuda_runtime.h> 
 
 using json = nlohmann::json;
 using namespace std;
@@ -56,6 +56,28 @@ Scene::Scene(string filename) {
 }
 
 Scene::~Scene() {
+    freeAllGPUResources();
+}
+
+void Scene::freeAllGPUResources() {
+    // 1. 释放所有底层 Array
+    for (auto array : allocated_arrays) {
+        cudaFreeArray(array);
+    }
+    allocated_arrays.clear();
+
+    // 2. 释放纹理对象句柄
+    for (auto tex : texture_handles) {
+        cudaDestroyTextureObject(tex);
+    }
+    texture_handles.clear();
+
+    // 3. 释放环境光特定的 Global Buffer (别名表)
+    // 注意：probs 和 aliases 是 vector，这里指如果在 GPU 上分配了对应的 Buffer，
+    // 需要在这里释放。假设 Scene 类中如果有 float* dev_probs 等成员，需在此释放。
+    // 根据当前 EnvMap 定义，这里暂无额外的裸指针需要释放。
+
+    std::cout << "All GPU resources freed." << std::endl;
 }
 
 void Scene::loadFromJSON(const std::string& jsonName) {
@@ -85,7 +107,19 @@ void Scene::loadFromJSON(const std::string& jsonName) {
         }
 
         this->buildLightCDF();
-		std::cout << "Scene loaded successfully from " << jsonName << std::endl;
+
+        // 4. [修改] Load Environment Texture
+        if (data.contains("Environment Texture"))
+        {
+            const auto& envData = data["Environment Texture"];
+            if (envData.contains("FILE")) {
+                std::string envMapPath = envData["FILE"];
+                std::cout << "Loading Environment Map from: " << envMapPath << std::endl;
+                this->buildEnvMapAliasTable(envMapPath);
+            }
+        }
+
+        std::cout << "Scene loaded successfully from " << jsonName << std::endl;
     }
     catch (const json::exception& e) {
         std::cerr << "JSON Parsing Error: " << e.what() << std::endl;
@@ -96,51 +130,173 @@ void Scene::loadFromJSON(const std::string& jsonName) {
 int Scene::loadTexture(const std::string& path)
 {
     if (path.empty()) return -1;
-    // 1. 去重检查：如果路径已加载，直接返回现有索引
+    // 1. 去重检查
     if (texturepath_to_idx.count(path)) {
         return texturepath_to_idx[path];
     }
-	// 2. 加载图像数据
-	int width, height, channels;
-	unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
+
+    // 2. 加载图像数据
+    int width, height, channels;
+    unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 0); // channels=0 保持原通道
+
     if (!pixels) {
-        const char* reason = stbi_failure_reason(); // 获取详细失败原因
+        const char* reason = stbi_failure_reason();
         std::cerr << "Error: Could not load texture at " << path << std::endl;
         std::cerr << "Reason: " << (reason ? reason : "Unknown reason") << std::endl;
         return -1;
     }
-    else
-    {
-		std::cout << "Loaded texture: " << path  << std::endl;
+
+    // 3. 转换为 uchar4 并使用 createTexture 统一创建
+    std::vector<uchar4> host_data(width * height);
+    for (int i = 0; i < width * height; ++i) {
+        // 处理不同通道数
+        if (channels == 1) {
+            host_data[i] = make_uchar4(pixels[i], pixels[i], pixels[i], 255);
+        }
+        else if (channels == 3) {
+            host_data[i] = make_uchar4(pixels[i * 3], pixels[i * 3 + 1], pixels[i * 3 + 2], 255);
+        }
+        else if (channels == 4) {
+            host_data[i] = make_uchar4(pixels[i * 4], pixels[i * 4 + 1], pixels[i * 4 + 2], pixels[i * 4 + 3]);
+        }
+        else {
+            host_data[i] = make_uchar4(255, 0, 255, 255); // Error Pink
+        }
     }
-	// 3. 创建 CUDA Array 并拷贝数据
-	cudaChannelFormatDesc channel_desc = cudaCreateChannelDesc<uchar4>(); // 存储格式：4 通道，每通道8位无符号整数
-	cudaArray_t cu_array; // CUDA Array是二维数组类型，专门用于纹理优化
-    cudaMallocArray(&cu_array, &channel_desc, width, height);
-    cudaMemcpy2DToArray(cu_array, 0, 0, pixels, width * sizeof(uchar4), width * sizeof(uchar4), height, cudaMemcpyHostToDevice);
 
-	// 4. 配置纹理描述符
-	// 资源描述符
-    struct cudaResourceDesc res_desc = {};
-	res_desc.resType = cudaResourceTypeArray; // 资源类型为二维数组
-	res_desc.res.array.array = cu_array; // 关联 CUDA Array
-	// 纹理描述符
-    struct cudaTextureDesc tex_desc = {};
-	tex_desc.addressMode[0] = cudaAddressModeWrap; // U 方向环绕
-    tex_desc.addressMode[1] = cudaAddressModeWrap;
-	tex_desc.filterMode = cudaFilterModeLinear; // 线性插值过滤
-	tex_desc.readMode = cudaReadModeNormalizedFloat; // 读取为归一化浮点数
-	tex_desc.normalizedCoords = 1; // 使用归一化坐标 [0,1]
-
-    // 5. 创建纹理对象并存储句柄
-    cudaTextureObject_t tex_obj = 0;
-    // 把 资源描述符（绑定的 cudaArray 数据）和纹理描述符（读取规则）打包成一个可使用的纹理对象
-	cudaCreateTextureObject(&tex_obj, &res_desc, &tex_desc, NULL); 
-    int new_idx = (int)texture_handles.size();
-	texture_handles.push_back(tex_obj); // 存储纹理句柄
-    texturepath_to_idx[path] = new_idx; // 建立路径到索引的映射
     stbi_image_free(pixels);
+
+    // 调用统一的纹理创建函数 (自动存入 texture_handles)
+    int new_idx = createTexture<uchar4>(
+        host_data.data(),
+        width, height,
+        cudaAddressModeWrap,
+        cudaFilterModeLinear,
+        cudaCreateChannelDesc<uchar4>()
+    );
+
+    std::cout << "Loaded texture: " << path << " (ID: " << new_idx << ")" << std::endl;
+    texturepath_to_idx[path] = new_idx;
     return new_idx;
+}
+
+void Scene::buildEnvMapAliasTable(const std::string& filepath)
+{
+    int width, height, c;
+    // 1. 加载 HDR 数据
+    float* data = stbi_loadf(filepath.c_str(), &width, &height, &c, 3);
+
+    if (!data) {
+        std::cerr << "Failed to load HDR image: " << filepath << std::endl;
+        return;
+    }
+
+    env_map.width = width;
+    env_map.height = height;
+
+    int N = width * height;
+    std::cout << "Loaded HDR Texture: " << width << "x" << height << std::endl;
+
+    // 2. 准备 Host 数据用于构建
+    // 保存原始像素用于创建纹理
+    std::vector<float4> envMapPixels(N);
+    for (int i = 0; i < N; ++i) {
+        envMapPixels[i] = make_float4(data[i * 3], data[i * 3 + 1], data[i * 3 + 2], 1.0f);
+    }
+
+    // 初始化容器
+    env_map.probs.resize(N);
+    env_map.aliases.resize(N);
+    std::vector<float> pdf_map(N);
+
+    // 3. 计算能量 (Flux = L * sin(theta))
+    std::vector<float> energy(N);
+    float totalEnergy = 0.0f;
+
+    for (int v = 0; v < height; ++v) {
+        float theta = (v + 0.5f) / (float)height * PI;
+        float sinTheta = std::sin(theta);
+
+        for (int u = 0; u < width; ++u) {
+            int idx = v * width + u;
+            float3 color = make_float3(data[idx * 3], data[idx * 3 + 1], data[idx * 3 + 2]);
+            float lum = 0.2126f * color.x + 0.7152f * color.y + 0.0722f * color.z;
+
+            energy[idx] = std::max(lum, 0.0f) * sinTheta;
+            totalEnergy += energy[idx];
+        }
+    }
+    env_map.totalSum = totalEnergy;
+
+    // 4. 归一化能量
+    float avgEnergy = totalEnergy / N;
+    for (int i = 0; i < N; ++i) energy[i] /= avgEnergy;
+
+    // 5. 构建别名表 (Vose's Algorithm)
+    std::vector<int> small, large;
+    small.reserve(N);
+    large.reserve(N);
+
+    for (int i = 0; i < N; ++i) {
+        if (energy[i] < 1.0f) small.push_back(i);
+        else large.push_back(i);
+    }
+
+    while (!small.empty() && !large.empty()) {
+        int s = small.back(); small.pop_back();
+        int l = large.back(); large.pop_back();
+
+        env_map.probs[s] = energy[s];
+        env_map.aliases[s] = l;
+
+        energy[l] = (energy[l] + energy[s]) - 1.0f;
+
+        if (energy[l] < 1.0f) small.push_back(l);
+        else large.push_back(l);
+    }
+
+    while (!large.empty()) {
+        int l = large.back(); large.pop_back();
+        env_map.probs[l] = 1.0f;
+        env_map.aliases[l] = l;
+    }
+    while (!small.empty()) {
+        int s = small.back(); small.pop_back();
+        env_map.probs[s] = 1.0f;
+        env_map.aliases[s] = s;
+    }
+
+    // 6. 预计算 PDF Map
+    float pdfFactor = (totalEnergy > 0.0f) ? (N / (totalEnergy * 2.0f * PI * PI)) : 0.0f;
+    for (int idx = 0; idx < N; ++idx) {
+        float3 c = make_float3(data[idx * 3], data[idx * 3 + 1], data[idx * 3 + 2]);
+        float lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+        pdf_map[idx] = std::max(lum, 1e-6f) * pdfFactor;
+    }
+
+    stbi_image_free(data);
+
+    // 7. [修改] 创建纹理并保存 ID
+
+    // 7.1 创建 HDR 环境纹理 (float4)
+    env_map.env_tex_id = createTexture<float4>(
+        envMapPixels.data(),
+        width, height,
+        cudaAddressModeClamp,
+        cudaFilterModeLinear,
+        cudaCreateChannelDesc<float4>()
+    );
+
+    // 7.2 创建 PDF 纹理 (float)
+    env_map.pdf_map_id = createTexture<float>(
+        pdf_map.data(),
+        width, height,
+        cudaAddressModeClamp,
+        cudaFilterModeLinear,
+        cudaCreateChannelDesc<float>()
+    );
+
+    std::cout << "Alias Table Built. Tex IDs: " << env_map.env_tex_id << ", " << env_map.pdf_map_id << std::endl;
 }
 
 void Scene::loadMaterials(const json& materialsData, std::unordered_map<std::string, uint32_t>& MatNameToID) {
@@ -194,7 +350,7 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                 std::cerr << "  [Warning] Explicit material '" << forcedMatName << "' not found in loaded materials! Falling back to MTL/Default." << std::endl;
             }
         }
-        // 2. 变换矩阵计算 (保持不变)
+        // 2. 变换矩阵计算
         glm::vec3 translation = glm::vec3(p["TRANS"][0], p["TRANS"][1], p["TRANS"][2]);
         glm::vec3 rotation = glm::vec3(p["ROTAT"][0], p["ROTAT"][1], p["ROTAT"][2]);
         glm::vec3 scale = glm::vec3(p["SCALE"][0], p["SCALE"][1], p["SCALE"][2]);
@@ -222,90 +378,84 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
             bool mtlLoaded = !tinyMaterials.empty();
 
             // 4. 材质加载逻辑
-           if (!useForcedMaterial && mtlLoaded) {
-               // Case 2: 没强制指定，且有 MTL -> 加载 MTL 到全局材质库
-               for (const auto& tMat : tinyMaterials) {
-                   Material newMat{};
-                   // --- 1. 基础颜色与自发光处理 ---
-                   newMat.basecolor = glm::vec3(tMat.diffuse[0], tMat.diffuse[1], tMat.diffuse[2]);
-                   glm::vec3 emission = glm::vec3(tMat.emission[0], tMat.emission[1], tMat.emission[2]);
-                   if (glm::length(emission) < 0.001f) {
-                       glm::vec3 ambient = glm::vec3(tMat.ambient[0], tMat.ambient[1], tMat.ambient[2]);
-                       if (glm::length(ambient) > 1.0f) emission = ambient;
-                   }
+            if (!useForcedMaterial && mtlLoaded) {
+                // Case 2: 没强制指定，且有 MTL -> 加载 MTL 到全局材质库
+                for (const auto& tMat : tinyMaterials) {
+                    Material newMat{};
+                    // --- 1. 基础颜色与自发光处理 ---
+                    newMat.basecolor = glm::vec3(tMat.diffuse[0], tMat.diffuse[1], tMat.diffuse[2]);
+                    glm::vec3 emission = glm::vec3(tMat.emission[0], tMat.emission[1], tMat.emission[2]);
+                    if (glm::length(emission) < 0.001f) {
+                        glm::vec3 ambient = glm::vec3(tMat.ambient[0], tMat.ambient[1], tMat.ambient[2]);
+                        if (glm::length(ambient) > 1.0f) emission = ambient;
+                    }
 
-                   if (glm::length(emission) > 0.001f) {
-                       newMat.emittance = glm::length(emission);
-                       newMat.basecolor = emission; // 如果是光源，BaseColor 通常即为发光色
-                   }
+                    if (glm::length(emission) > 0.001f) {
+                        newMat.emittance = glm::length(emission);
+                        newMat.basecolor = emission; // 如果是光源，BaseColor 通常即为发光色
+                    }
 
-                   // --- 2. 优先加载贴图 (先于类型判断) ---
-                   bool hasTextures = false;
+                    // --- 2. 优先加载贴图 (先于类型判断) ---
+                    bool hasTextures = false;
 
-                   // 加载 Diffuse / Albedo 贴图
-                   if (!tMat.diffuse_texname.empty()) {
-                       newMat.diffuse_tex_id = loadTexture(baseDir + tMat.diffuse_texname);
-                       if (newMat.diffuse_tex_id >= 0) hasTextures = true;
-                   }
+                    // 加载 Diffuse / Albedo 贴图
+                    if (!tMat.diffuse_texname.empty()) {
+                        newMat.diffuse_tex_id = loadTexture(baseDir + tMat.diffuse_texname);
+                        if (newMat.diffuse_tex_id >= 0) hasTextures = true;
+                    }
 
-                   // 加载 Normal / Bump 贴图
-                   if (!tMat.bump_texname.empty()) {
-                       newMat.normal_tex_id = loadTexture(baseDir + tMat.bump_texname);
-                       if (newMat.normal_tex_id >= 0) hasTextures = true;
-                   }
-                   // 某些导出器可能将法线放在 displacement 或其他字段，如有需要可在此补充
+                    // 加载 Normal / Bump 贴图
+                    if (!tMat.bump_texname.empty()) {
+                        newMat.normal_tex_id = loadTexture(baseDir + tMat.bump_texname);
+                        if (newMat.normal_tex_id >= 0) hasTextures = true;
+                    }
 
-                   // 加载 Roughness / Metallic 贴图 
-                   if (!tMat.roughness_texname.empty()) {
-                       newMat.metallic_roughness_tex_id = loadTexture(baseDir + tMat.roughness_texname);
-                       if (newMat.metallic_roughness_tex_id >= 0) hasTextures = true;
-                   }
-                   //else if (!tMat.metallic_texname.empty()) {
-                   //    newMat.metallic_roughness_tex_id = loadTexture(baseDir + tMat.metallic_texname);
-                   //    if (newMat.metallic_roughness_tex_id >= 0) hasTextures = true;
-                   //}
+                    // 加载 Roughness / Metallic 贴图 
+                    if (!tMat.roughness_texname.empty()) {
+                        newMat.metallic_roughness_tex_id = loadTexture(baseDir + tMat.roughness_texname);
+                        if (newMat.metallic_roughness_tex_id >= 0) hasTextures = true;
+                    }
 
-                   // --- 3. 计算常量 PBR 属性 (作为默认值或混合因子) ---
-                   // 转换 Shininess -> Roughness
-                   if (tMat.shininess >= 0) {
-                       newMat.roughness = 1.0f - std::min(1.0f, tMat.shininess / 1000.0f);
-                   }
-                   else {
-                       newMat.roughness = 0.5f; // 默认值
-                   }
+                    // --- 3. 计算常量 PBR 属性 (作为默认值或混合因子) ---
+                    // 转换 Shininess -> Roughness
+                    if (tMat.shininess >= 0) {
+                        newMat.roughness = 1.0f - std::min(1.0f, tMat.shininess / 1000.0f);
+                    }
+                    else {
+                        newMat.roughness = 0.5f; // 默认值
+                    }
 
-                   // 转换 Specular -> Metallic (简单启发式)
-                   float specAvg = (tMat.specular[0] + tMat.specular[1] + tMat.specular[2]) / 3.0f;
-                   // 如果有镜面高光但没有贴图，通常是非金属；如果是纯白高光，可能是金属。
-                   newMat.metallic = (specAvg > 0.1f) ? 1.0f : 0.0f;
+                    // 转换 Specular -> Metallic (简单启发式)
+                    float specAvg = (tMat.specular[0] + tMat.specular[1] + tMat.specular[2]) / 3.0f;
+                    // 如果有镜面高光但没有贴图，通常是非金属；如果是纯白高光，可能是金属。
+                    newMat.metallic = (specAvg > 0.1f) ? 1.0f : 0.0f;
 
-                   // 保持为 Diffuse 
-                   if (newMat.emittance > 0.0f) {
-                       newMat.Type = IDEAL_DIFFUSE; // 或者单独的 EMISSIVE 类型
-                   }
-                   // 如果有任何贴图，强制使用 MicrofacetPBR
-                   else if (hasTextures) {
-                       newMat.Type = MicrofacetPBR;
-                   }
-                   // 仅在没有贴图时，才根据常量进行简化分类
-                   else {
-                       if ((newMat.metallic > 0.9f && newMat.roughness < 0.02f) || tMat.illum == 3) {
-                           newMat.Type = IDEAL_SPECULAR; // 完美镜面
-                           newMat.roughness = 0.0f;
-                           newMat.metallic = 1.0f;
-                       }
-                       else if (newMat.metallic < 0.1f && newMat.roughness > 0.8f) {
-                           // 阈值稍微降低一点，避免稍有光泽的物体变成纯 Lambertian
-                           newMat.Type = IDEAL_DIFFUSE;  // 完美漫反射
-                       }
-                       else {
-                           newMat.Type = MicrofacetPBR;  // 介于两者之间
-                       }
-                   }
+                    // 保持为 Diffuse 
+                    if (newMat.emittance > 0.0f) {
+                        newMat.Type = IDEAL_DIFFUSE; // 或者单独的 EMISSIVE 类型
+                    }
+                    // 如果有任何贴图，强制使用 MicrofacetPBR
+                    else if (hasTextures) {
+                        newMat.Type = MicrofacetPBR;
+                    }
+                    // 仅在没有贴图时，才根据常量进行简化分类
+                    else {
+                        if ((newMat.metallic > 0.9f && newMat.roughness < 0.02f) || tMat.illum == 3) {
+                            newMat.Type = IDEAL_SPECULAR; // 完美镜面
+                            newMat.roughness = 0.0f;
+                            newMat.metallic = 1.0f;
+                        }
+                        else if (newMat.metallic < 0.1f && newMat.roughness > 0.8f) {
+                            newMat.Type = IDEAL_DIFFUSE;  // 完美漫反射
+                        }
+                        else {
+                            newMat.Type = MicrofacetPBR;  // 介于两者之间
+                        }
+                    }
 
-                   this->materials.push_back(newMat);
-               }
-           }
+                    this->materials.push_back(newMat);
+                }
+            }
             else {
                 // Case 3: 创建默认材质
                 Material defaultMat{};
@@ -316,7 +466,7 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                 this->materials.push_back(defaultMat);
             }
 
-		   // 5. 顶点处理与索引构建
+            // 5. 顶点处理与索引构建
             for (const auto& shape : shapes) {
                 size_t index_offset = 0;
                 for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {

@@ -1,6 +1,5 @@
 #include "cuda_utilities.h"
 
-// 只有 Host 函数需要在这里实现
 void checkCUDAErrorFn(const char* msg, const char* file, int line) {
     cudaDeviceSynchronize();
     cudaError_t err = cudaGetLastError();
@@ -18,4 +17,3 @@ void checkCUDAErrorFn(const char* msg, const char* file, int line) {
 #endif
     exit(EXIT_FAILURE);
 }
-
