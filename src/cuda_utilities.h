@@ -169,5 +169,5 @@ __host__ __device__ __forceinline__ int BinarySearch(const float* cdf, int count
         }
     }
     // ±ß½ç±£»¤
-    return glm::min(left, count - 1);
+    return min(left, count - 1);
 }

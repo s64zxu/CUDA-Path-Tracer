@@ -20,14 +20,20 @@ __host__ __device__ glm::vec3 FresnelSchlick(glm::vec3 F0, float cosTheta) {
     return F0 + (glm::vec3(1.0f) - F0) * x5;
 }
 
+__host__ __device__ float FresnelSchlick(float F0, float cosTheta) {
+    float x = glm::clamp(1.0f - cosTheta, 0.0f, 1.0f);
+    float x5 = x * x * x * x * x;
+    return F0 + (1.0f - F0) * x5;
+}
+
 __host__ __device__ float DistributionGGX(glm::vec3 N, glm::vec3 H, float roughness) {
     float a = roughness * roughness;
     float a2 = a * a;
-    float NdotH = glm::max(glm::dot(N, H), 0.0f);
+    float NdotH = max(glm::dot(N, H), 0.0f);
     float NdotH2 = NdotH * NdotH;
     float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
     denom = PI * denom * denom;
-    return a2 / glm::max(denom, EPSILON);
+    return a2 / max(denom, EPSILON);
 }
 
 __host__ __device__ float GeometrySchlickGGX(float NdotV, float roughness) {
@@ -37,8 +43,8 @@ __host__ __device__ float GeometrySchlickGGX(float NdotV, float roughness) {
 }
 
 __host__ __device__ float GeometrySmith(glm::vec3 N, glm::vec3 V, glm::vec3 L, float roughness) {
-    float NdotV = glm::max(glm::dot(N, V), 0.0f);
-    float NdotL = glm::max(glm::dot(N, L), 0.0f);
+    float NdotV = max(glm::dot(N, V), 0.0f);
+    float NdotL = max(glm::dot(N, L), 0.0f);
     float ggx2 = GeometrySchlickGGX(NdotV, roughness);
     float ggx1 = GeometrySchlickGGX(NdotL, roughness);
     return ggx1 * ggx2;
@@ -73,7 +79,7 @@ __host__ __device__ glm::vec3 NDFImportanceSampling(const glm::vec3& N, const gl
 // 辅助：计算镜面反射项采样的概率权重 (用于 Sample 和 PDF 保持一致)
 __host__ __device__ float CalculateSpecularProbability(const Material& m, const glm::vec3& N, const glm::vec3& V) {
     glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.basecolor, m.metallic);
-    glm::vec3 F = FresnelSchlick(F0, glm::max(glm::dot(N, V), 0.0f));
+    glm::vec3 F = FresnelSchlick(F0, max(glm::dot(N, V), 0.0f));
 
     // 简单的亮度平均
     float specProb = (F.r + F.g + F.b) / 3.0f;
@@ -94,7 +100,7 @@ __host__ __device__ glm::vec3 evalPBR(const glm::vec3& wo, const glm::vec3& wi, 
     if (NdotL <= 0.0f || NdotV <= 0.0f) return glm::vec3(0.0f); // 几何剔除
 
     glm::vec3 H = glm::normalize(wo + wi);
-    float VdotH = glm::max(glm::dot(wo, H), 0.0f);
+    float VdotH = max(glm::dot(wo, H), 0.0f);
     float roughness = glm::clamp(m.roughness, 0.05f, 1.0f);
 
     // --- Specular Term (Cook-Torrance) ---
@@ -123,9 +129,15 @@ __host__ __device__ glm::vec3 evalDiffuse(const Material& m, const glm::vec3& N,
 }
 
 // 1.3 Ideal Specular
-__host__ __device__ glm::vec3 evalSpecular(const Material& m, const glm::vec3& wo, const glm::vec3& wi, const glm::vec3& N) {
+__host__ __device__ glm::vec3 evalSpecularReflection(const Material& m, const glm::vec3& wo, const glm::vec3& wi, const glm::vec3& N) {
     return glm::vec3(0.0f); 
 }
+
+// 1.4 Ideal Refraction
+__host__ __device__ glm::vec3 evalSpecularRefraction(const Material& m, const glm::vec3& wo, const glm::vec3& wi, const glm::vec3& N) {
+    return glm::vec3(0.0f);
+}
+
 
 // ========================================================================
 // 2. PDF Calculation (概率密度计算) 用于计算MIS权重
@@ -138,7 +150,7 @@ __host__ __device__ float pdfPBR(const glm::vec3& wo, const glm::vec3& wi, const
     if (NdotL <= 0.0f) return 0.0f;
 
     glm::vec3 H = glm::normalize(wo + wi);
-    float VdotH = glm::max(glm::dot(wo, H), 0.0f);
+    float VdotH = max(glm::dot(wo, H), 0.0f);
     float roughness = glm::clamp(m.roughness, 0.05f, 1.0f);
 
     // 1. Diffuse PDF (Cosine Weighted)
@@ -148,7 +160,7 @@ __host__ __device__ float pdfPBR(const glm::vec3& wo, const glm::vec3& wi, const
     // pdf_h = D * (N dot H)
     // pdf_omega = pdf_h / (4 * (wo dot h))
     float D = DistributionGGX(N, H, roughness);
-    float NdotH = glm::max(glm::dot(N, H), 0.0f);
+    float NdotH = max(glm::dot(N, H), 0.0f);
     float pdfSpec = (D * NdotH) / (4.0f * VdotH + EPSILON);
 
     // 3. 混合权重 (必须与 Sample 中的选择概率一致)
@@ -167,15 +179,12 @@ __host__ __device__ float pdfDiffuse(const glm::vec3& wi, const glm::vec3& N) {
 }
 
 // 2.3 Ideal Specular PDF (Delta PDF)
-__host__ __device__ float pdfSpecular(const glm::vec3& wo, const glm::vec3& wi, const glm::vec3& N) {
-    glm::vec3 ideal_reflection = glm::reflect(-wo, N);
+__host__ __device__ float pdfSpecularReflection(const glm::vec3& wo, const glm::vec3& wi, const glm::vec3& N) {
+    return PDF_DIRAC_DELTA;
+}
 
-    // 必须有一定的容差，因为 float 计算会有微小误差
-    // 0.999f 大约对应 2.5 度的偏差，对于"理想"镜面来说足够严格但也足够宽容以应对浮点误差
-    if (glm::dot(wi, ideal_reflection) > 0.999f) {
-        return PDF_DIRAC_DELTA;
-    }
-    return 0.0f;
+__host__ __device__ float pdfSpecularRefraction(const glm::vec3& wo, const glm::vec3& wi, const glm::vec3& N) {
+    return PDF_DIRAC_DELTA;
 }
 
 // 通用 BSDF 评估 
@@ -183,7 +192,7 @@ __device__ glm::vec3 evalBSDF(glm::vec3 wo, glm::vec3 wi, glm::vec3 N, Material 
     if (m.Type == MicrofacetPBR) {
         return evalPBR(wo, wi, N, m);
     }
-    else if (m.Type == IDEAL_DIFFUSE) {
+    else if (m.Type == DIFFUSE) {
         return evalDiffuse(m, N, wi);
     }
     else {
@@ -196,12 +205,14 @@ __device__ float pdfBSDF(glm::vec3 wo, glm::vec3 wi, glm::vec3 N, Material m) {
     if (m.Type == MicrofacetPBR) {
         return pdfPBR(wo, wi, N, m);
     }
-    else if (m.Type == IDEAL_DIFFUSE) {
+    else if (m.Type == DIFFUSE) {
         return pdfDiffuse(wi, N);
     }
-    else {
-        return pdfSpecular(wo, wi, N);
+    else if (m.Type == SPECULAR_REFLECTION) {
+        return pdfSpecularReflection(wo, wi, N);
     }
+    else
+        return pdfSpecularRefraction(wo, wi, N);
 }
 
 // ========================================================================
@@ -238,7 +249,7 @@ __host__ __device__ glm::vec3 samplePBR(
     pdf = pdfPBR(wo, wi, N, m);
     glm::vec3 fr = evalPBR(wo, wi, N, m);
 	// attenuation = fr * costheta / pdf
-    return fr * glm::max(0.0f, glm::dot(N, wi)) / glm::max(pdf, EPSILON);
+    return fr * max(0.0f, glm::dot(N, wi)) / max(pdf, EPSILON);
 }
 
 __host__ __device__ glm::vec3 sampleDiffuse(
@@ -255,24 +266,68 @@ __host__ __device__ glm::vec3 sampleDiffuse(
     pdf = pdfDiffuse(wi, N);
     glm::vec3 fr = evalDiffuse(m, N, wi);
 
-    return fr * glm::max(0.0f, glm::dot(N, wi)) / glm::max(pdf, EPSILON);
+    return fr * max(0.0f, glm::dot(N, wi)) / max(pdf, EPSILON);
 }
 
-__host__ __device__ glm::vec3 sampleSpecular(
+__host__ __device__ glm::vec3 sampleSpecularReflection(
     const glm::vec3& wo, glm::vec3& wi, float& pdf, const glm::vec3& N, const Material& m)
 {
     wi = glm::reflect(-wo, N);
 
-    float NdotWi = glm::max(glm::dot(N, wi), 0.0f);
+    float NdotWi = max(glm::dot(N, wi), 0.0f);
 
     // 计算 BRDF/PDF 比值 (Fr / NdotWi)
-    pdf = pdfSpecular(wo, wi, N);
+    pdf = pdfSpecularReflection(wo, wi, N);
 
     // 计算 Fresnel 项 Fr
     glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.basecolor, m.metallic);
     glm::vec3 Fr = FresnelSchlick(F0, NdotWi);
     return Fr;
 }
+
+__host__ __device__ glm::vec3 sampleSpecularRefraction(
+    const glm::vec3& wo, glm::vec3& wi, float& pdf, const glm::vec3& N, const Material& m, unsigned int& seed)
+{
+    // 1. 确定入射/出射状态
+    float n1 = 1.0f; 
+    float n2 = m.ior;
+    glm::vec3 n_eff = N;
+    
+    // 如果是从内部往外走 (wo 和 N 同向)
+    if (glm::dot(wo, N) < 0.0f) {
+        n1 = m.ior;
+        n2 = 1.0f;
+        n_eff = -N;
+    }
+
+    float eta = n1 / n2;
+    float cosThetaI = glm::clamp(glm::dot(wo, n_eff), 0.0f, 1.0f);
+
+    // 2. 计算精准的 Fresnel (Schlick 近似用于电介质)
+    float r0 = (n1 - n2) / (n1 + n2);
+    r0 *= r0;
+    float Fr = FresnelSchlick(r0, cosThetaI);
+    // 3. 检查是否全内反射 (TIR)
+    float sinThetaI2 = max(0.0f, 1.0f - cosThetaI * cosThetaI);
+    float sinThetaT2 = eta * eta * sinThetaI2;
+
+    // 4. 随机采样：反射 vs 折射
+    float rnd = rand_float(seed);
+    if (sinThetaT2 >= 1.0f || rnd < Fr) {
+        // --- 采样反射路径 ---
+        wi = glm::reflect(-wo, n_eff);
+        pdf = 1.0f; // Delta 分布在采样中通常设为 1 或特殊标记
+        return glm::vec3(1.0f); 
+    }
+    else {
+        // --- 采样折射路径 ---
+        wi = glm::refract(-wo, n_eff, eta);
+        pdf = 1.0f;
+        float factor = (n2 * n2) / (n1 * n1);
+        return m.basecolor * factor;
+    }
+}
+
 
 __host__ __device__ void SampleLight(
     const MeshData& mesh_data,

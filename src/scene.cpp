@@ -108,7 +108,7 @@ void Scene::loadFromJSON(const std::string& jsonName) {
 
         this->buildLightCDF();
 
-        // 4. [修改] Load Environment Texture
+        // 4.  Load Environment Texture
         if (data.contains("Environment Texture"))
         {
             const auto& envData = data["Environment Texture"];
@@ -311,9 +311,11 @@ void Scene::loadMaterials(const json& materialsData, std::unordered_map<std::str
         newMaterial.metallic = p.value("metallic", 0.0f);
         newMaterial.roughness = p.value("roughness", 0.5f);
         newMaterial.emittance = p.value("emittance", 0.0f);
+        newMaterial.ior = p.value("ior", 1.0f);
         std::string typeStr = p.value("Type", "MicrofacetPBR");
-        if (typeStr == "IDEAL_DIFFUSE") newMaterial.Type = IDEAL_DIFFUSE;
-        else if (typeStr == "IDEAL_SPECULAR") newMaterial.Type = IDEAL_SPECULAR;
+        if (typeStr == "DIFFUSE") newMaterial.Type = DIFFUSE;
+        else if (typeStr == "SPECULAR_REFLECTION") newMaterial.Type = SPECULAR_REFLECTION;
+        else if (typeStr == "SPECULAR_REFRACTION") newMaterial.Type = SPECULAR_REFRACTION;
         else newMaterial.Type = MicrofacetPBR;
 
         newMaterial.diffuse_tex_id = -1;
@@ -429,10 +431,16 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                     float specAvg = (tMat.specular[0] + tMat.specular[1] + tMat.specular[2]) / 3.0f;
                     // 如果有镜面高光但没有贴图，通常是非金属；如果是纯白高光，可能是金属。
                     newMat.metallic = (specAvg > 0.1f) ? 1.0f : 0.0f;
+                    newMat.ior = tMat.ior; // 读取折射率
 
-                    // 保持为 Diffuse 
+                    // 检查自发光属性
                     if (newMat.emittance > 0.0f) {
-                        newMat.Type = IDEAL_DIFFUSE; // 或者单独的 EMISSIVE 类型
+                        newMat.Type = DIFFUSE; // 或者单独的 EMISSIVE 类型
+                    }
+                    else if (tMat.illum == 6 || tMat.illum == 7 || (tMat.ior > 1.01f && tMat.dissolve < 1.0f)) {
+                        newMat.Type = SPECULAR_REFRACTION;
+                        glm::vec3 transmittance = glm::vec3(tMat.transmittance[0], tMat.transmittance[1], tMat.transmittance[2]);
+                        newMat.basecolor = transmittance;
                     }
                     // 如果有任何贴图，强制使用 MicrofacetPBR
                     else if (hasTextures) {
@@ -441,12 +449,12 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                     // 仅在没有贴图时，才根据常量进行简化分类
                     else {
                         if ((newMat.metallic > 0.9f && newMat.roughness < 0.02f) || tMat.illum == 3) {
-                            newMat.Type = IDEAL_SPECULAR; // 完美镜面
+                            newMat.Type = SPECULAR_REFLECTION; // 完美镜面
                             newMat.roughness = 0.0f;
                             newMat.metallic = 1.0f;
                         }
                         else if (newMat.metallic < 0.1f && newMat.roughness > 0.8f) {
-                            newMat.Type = IDEAL_DIFFUSE;  // 完美漫反射
+                            newMat.Type = DIFFUSE;  // 完美漫反射
                         }
                         else {
                             newMat.Type = MicrofacetPBR;  // 介于两者之间

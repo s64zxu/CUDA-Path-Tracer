@@ -101,13 +101,15 @@ namespace pathtrace_wavefront
     static int* d_shadow_ray_queue = NULL;
     static int* d_pbr_queue = NULL;
     static int* d_diffuse_queue = NULL;
-    static int* d_specular_queue = NULL;
+    static int* d_reflection_queue = NULL;
+    static int* d_refraction_queue = NULL;
     static int* d_new_path_queue = NULL;
     // counter
     static int* d_extension_ray_counter = NULL;
     static int* d_pbr_counter = NULL;
     static int* d_diffuse_counter = NULL;
-    static int* d_specular_counter = NULL;
+    static int* d_reflection_counter = NULL;
+    static int* d_refraction_counter = NULL;
     static int* d_new_path_counter = NULL;
     // shadow queue
     static ShadowQueue d_shadow_queue;
@@ -287,19 +289,21 @@ namespace pathtrace_wavefront
         cudaMalloc((void**)&d_shadow_ray_queue, size_int);
         cudaMalloc((void**)&d_pbr_queue, size_int);
         cudaMalloc((void**)&d_diffuse_queue, size_int);
-        cudaMalloc((void**)&d_specular_queue, size_int);
+        cudaMalloc((void**)&d_reflection_queue, size_int);
         cudaMalloc((void**)&d_new_path_queue, size_int);
+        cudaMalloc((void**)&d_refraction_queue, size_int);
 
         // 3. Counters
         cudaMalloc((void**)&d_extension_ray_counter, sizeof(int));
         cudaMalloc((void**)&d_pbr_counter, sizeof(int));
         cudaMalloc((void**)&d_diffuse_counter, sizeof(int));
-        cudaMalloc((void**)&d_specular_counter, sizeof(int));
+        cudaMalloc((void**)&d_reflection_counter, sizeof(int));
         cudaMalloc((void**)&d_new_path_counter, sizeof(int));
-
+        cudaMalloc((void**)&d_refraction_counter, sizeof(int));
+        cudaMemset(d_refraction_counter, 0, sizeof(int));
         cudaMemset(d_extension_ray_counter, 0, sizeof(int));
         cudaMemset(d_diffuse_counter, 0, sizeof(int));
-        cudaMemset(d_specular_counter, 0, sizeof(int));
+        cudaMemset(d_reflection_counter, 0, sizeof(int));
 
         // 4. Shadow Queue
         cudaMalloc((void**)&d_shadow_queue.ray_ori_tmax, size_float4);
@@ -327,14 +331,14 @@ namespace pathtrace_wavefront
         cudaFree(d_shadow_ray_queue);
         cudaFree(d_pbr_queue);
         cudaFree(d_diffuse_queue);
-        cudaFree(d_specular_queue);
+        cudaFree(d_reflection_queue);
         cudaFree(d_new_path_queue);
 
         // Counters
         cudaFree(d_extension_ray_counter);
         cudaFree(d_pbr_counter);
         cudaFree(d_diffuse_counter);
-        cudaFree(d_specular_counter);
+        cudaFree(d_reflection_counter);
         cudaFree(d_new_path_counter);
 
         // Shadow Queue
@@ -391,24 +395,28 @@ namespace pathtrace_wavefront
         // 1. 材质种类统计
         int count_pbr = 0;
         int count_diffuse = 0;
-        int count_specular = 0;
+        int count_reflection = 0;
+        int count_refraction = 0;
         for (const auto& mat : scene->materials) {
             if (mat.Type == MicrofacetPBR) count_pbr++;
-            else if (mat.Type == IDEAL_DIFFUSE) count_diffuse++;
-            else if (mat.Type == IDEAL_SPECULAR) count_specular++;
+            else if (mat.Type == DIFFUSE) count_diffuse++;
+            else if (mat.Type == SPECULAR_REFLECTION) count_reflection++;
+            else count_refraction++;
         }
 
         // 2. 各材质对应的三角形面数统计
         long long faces_pbr = 0;
         long long faces_diffuse = 0;
-        long long faces_specular = 0;
+        long long faces_reflection = 0;
+        long long faces_refraction = 0;
 
         for (int matId : scene->materialIds) {
             if (matId >= 0 && matId < scene->materials.size()) {
                 MaterialType type = scene->materials[matId].Type;
                 if (type == MicrofacetPBR) faces_pbr++;
-                else if (type == IDEAL_DIFFUSE) faces_diffuse++;
-                else if (type == IDEAL_SPECULAR) faces_specular++;
+                else if (type == DIFFUSE) faces_diffuse++;
+                else if (type == SPECULAR_REFLECTION) faces_reflection++;
+                else faces_refraction++;
             }
         }
 
@@ -416,7 +424,8 @@ namespace pathtrace_wavefront
         std::cout << "[Material] Total Materials: " << scene->materials.size() << std::endl;
         std::cout << "  > Microfacet PBR: " << count_pbr << " types, " << faces_pbr << " faces" << std::endl;
         std::cout << "  > Ideal Diffuse:  " << count_diffuse << " types, " << faces_diffuse << " faces" << std::endl;
-        std::cout << "  > Ideal Specular: " << count_specular << " types, " << faces_specular << " faces" << std::endl;
+        std::cout << "  > Ideal Reflection: " << count_reflection << " types, " << faces_reflection << " faces" << std::endl;
+        std::cout << "  > Ideal Refraction: " << count_refraction << " types, " << faces_refraction << " faces" << std::endl;
 
         // 几何与灯光信息
         std::cout << "[Geometry] Total Vertices:  " << scene->vertices.size() << std::endl;
@@ -743,7 +752,7 @@ namespace pathtrace_wavefront
         int num_lights = light_data.num_lights;
         float total_light_area = light_data.total_area;
 
-        if (num_lights == 0 || material.Type == IDEAL_SPECULAR) return;
+        if (num_lights == 0 || material.Type == SPECULAR_REFLECTION || material.Type == SPECULAR_REFRACTION) return;
 
         glm::vec3 light_sample_pos;
         glm::vec3 light_N;
@@ -760,9 +769,9 @@ namespace pathtrace_wavefront
         glm::vec3 wi = glm::normalize(light_sample_pos - intersect_point);
         float dist = glm::distance(light_sample_pos, intersect_point);
 
-        float cosThetaSurf = glm::max(glm::dot(N, wi), 0.0f);
+        float cosThetaSurf = max(glm::dot(N, wi), 0.0f);
         // 注意：光源法线 light_N 需要朝向着色点 (-wi)
-        float cosThetaLight = glm::max(glm::dot(light_N, -wi), 0.0f);
+        float cosThetaLight = max(glm::dot(light_N, -wi), 0.0f);
 
         // B. 检查几何有效性
         if (cosThetaSurf > 0.0f && cosThetaLight > 0.0f && pdf_light_area > 0.0f) {
@@ -793,7 +802,8 @@ namespace pathtrace_wavefront
                     int shadow_idx = DispatchPathIndex(d_shadow_queue_counter);
 
                     // Optimized Write
-                    d_shadow_queue.ray_ori_tmax[shadow_idx] = make_float4(intersect_point.x + N.x * EPSILON,
+                    d_shadow_queue.ray_ori_tmax[shadow_idx] = make_float4(
+                        intersect_point.x + N.x * EPSILON,
                         intersect_point.y + N.y * EPSILON,
                         intersect_point.z + N.z * EPSILON,
                         dist - 2.0f * EPSILON); // .w = tmax
@@ -819,13 +829,18 @@ namespace pathtrace_wavefront
             // directly apply attenuation (different from the paper)
             throughput *= attenuation;
 
+            bool is_reflect = glm::dot(next_dir, N) > 0.0f;
+            glm::vec3 bias_n = is_reflect ? N : -N;
+
             // common updates when path survives
             // .w = next_pdf
             d_path_state.throughput_pdf[idx] = make_float4(throughput.x, throughput.y, throughput.z, next_pdf);
 
-            d_path_state.ray_ori[idx] = make_float4(intersect_point.x + N.x * EPSILON,
-                intersect_point.y + N.y * EPSILON,
-                intersect_point.z + N.z * EPSILON, 0.0f);
+            d_path_state.ray_ori[idx] = make_float4(
+                intersect_point.x + bias_n.x * EPSILON,
+                intersect_point.y + bias_n.y * EPSILON,
+                intersect_point.z + bias_n.z * EPSILON,
+                0.0f);
 
             // Reset t to FLT_MAX (stored in .w)
             d_path_state.ray_dir_dist[idx] = make_float4(next_dir.x, next_dir.y, next_dir.z, FLT_MAX);
@@ -1048,10 +1063,10 @@ namespace pathtrace_wavefront
         }
     }
 
-    __global__ void SampleSpecularMaterialKernel(
+    __global__ void sampleSpecularReflectionMaterialKernel(
         int trace_depth,
         PathState d_path_state,
-        int* d_specular_queue,
+        int* d_reflection_queue,
         int specular_path_count,
         int* d_extension_ray_queue,
         int* d_extension_ray_counter,
@@ -1064,7 +1079,7 @@ namespace pathtrace_wavefront
 
         if (queue_index < specular_path_count) {
             // 1. 读取对应光线
-            int idx = d_specular_queue[queue_index];
+            int idx = d_reflection_queue[queue_index];
 
             // 2. 读取PathState，准备交互数据
             float4 dir_dist = d_path_state.ray_dir_dist[idx];
@@ -1095,7 +1110,62 @@ namespace pathtrace_wavefront
             glm::vec3 attenuation(0.0f);
 
             // samplePBR 返回 (fr * cos / pdf)
-            attenuation = sampleSpecular(wo, next_dir, next_pdf, N, material);
+            attenuation = sampleSpecularReflection(wo, next_dir, next_pdf, N, material);
+
+            // 4. 更新 Path State
+            UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed,
+                throughput, attenuation, intersect_point, N, next_dir, next_pdf);
+        }
+    }
+
+    __global__ void sampleSpecularRefractionMaterialKernel(
+        int trace_depth,
+        PathState d_path_state,
+        int* d_refraction_queue,
+        int refraction_path_count,
+        int* d_extension_ray_queue,
+        int* d_extension_ray_counter,
+        Material* d_materials,
+        MeshData d_mesh_data,
+        cudaTextureObject_t* d_texture_objects
+    )
+    {
+        int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+        if (queue_index < refraction_path_count) {
+            // 1. 读取对应光线
+            int idx = d_refraction_queue[queue_index];
+
+            // 2. 读取PathState，准备交互数据
+            float4 dir_dist = d_path_state.ray_dir_dist[idx];
+            float4 ori_pad = d_path_state.ray_ori[idx];
+            float4 tp_pdf = d_path_state.throughput_pdf[idx];
+
+            float4 hit_uv = d_path_state.hit_normal[idx];
+            int prim_id = d_path_state.hit_geom_id[idx];
+            glm::vec3 N = GetShadingNormal(d_mesh_data, d_materials, d_texture_objects, prim_id, hit_uv.x, hit_uv.y); // shading normal
+
+            float ray_t = dir_dist.w;
+            // int hit_geom_id = d_path_state.hit_geom_id[idx]; // Unused here
+            int mat_id = d_path_state.material_id[idx];
+
+            glm::vec3 ray_ori = MakeVec3(ori_pad);
+            glm::vec3 ray_dir = MakeVec3(dir_dist);
+            glm::vec3 throughput = MakeVec3(tp_pdf);
+
+            glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
+            glm::vec3 wo = -ray_dir;
+            Material material = d_materials[mat_id];
+
+            unsigned int local_seed = d_path_state.rng_state[idx];
+
+            // 3: specular Sampling (Scatter / Indirect)
+            glm::vec3 next_dir;
+            float next_pdf = 0.0f;
+            glm::vec3 attenuation(0.0f);
+
+            // samplePBR 返回 (fr * cos / pdf)
+            attenuation = sampleSpecularRefraction(wo, next_dir, next_pdf, N, material, local_seed);
 
             // 4. 更新 Path State
             UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed,
@@ -1114,7 +1184,8 @@ namespace pathtrace_wavefront
         cudaTextureObject_t* d_texture_objects, 
         int* d_pbr_queue, int* d_pbr_counter,
         int* d_diffuse_queue, int* d_diffuse_counter,
-        int* d_specular_queue, int* d_specular_counter,
+        int* d_reflection_queue, int* d_reflection_counter,
+        int* d_refraction_queue, int* d_refraction_counter,
         int* d_new_path_queue, int* d_new_path_counter)
     {
         int idx = (blockIdx.x * blockDim.x) + threadIdx.x;;
@@ -1188,7 +1259,7 @@ namespace pathtrace_wavefront
             if (current_depth > RRDEPTH) {
                 unsigned int local_seed = d_path_state.rng_state[idx];
                 float r_rr = rand_float(local_seed);
-                float maxChan = glm::max(throughput.r, glm::max(throughput.g, throughput.b));
+                float maxChan = max(throughput.r, max(throughput.g, throughput.b));
                 maxChan = glm::clamp(maxChan, 0.0f, 1.0f);
 
                 if (r_rr < maxChan) {
@@ -1239,7 +1310,7 @@ namespace pathtrace_wavefront
                         bool prevWasSpecular = (last_pdf > (PDF_DIRAC_DELTA * 0.9f));
                         if (!prevWasSpecular) {
                             float distToLight = ray_dir_dist.w; // ray_t
-                            float cosLight = glm::max(glm::dot(N, wo), 0.0f);
+                            float cosLight = max(glm::dot(N, wo), 0.0f);
 
                             if (cosLight > EPSILON) {
                                 // [MODIFIED] Mesh Light PDF Calculation
@@ -1272,13 +1343,17 @@ namespace pathtrace_wavefront
                         int pbr_idx = DispatchPathIndex(d_pbr_counter);
                         d_pbr_queue[pbr_idx] = idx;
                     }
-                    if (material.Type == IDEAL_DIFFUSE) {
+                    if (material.Type == DIFFUSE) {
                         int diffuse_idx = DispatchPathIndex(d_diffuse_counter);
                         d_diffuse_queue[diffuse_idx] = idx;
                     }
-                    if (material.Type == IDEAL_SPECULAR) {
-                        int specular_idx = DispatchPathIndex(d_specular_counter);
-                        d_specular_queue[specular_idx] = idx;
+                    if (material.Type == SPECULAR_REFLECTION) {
+                        int reflec_idx = DispatchPathIndex(d_reflection_counter);
+                        d_reflection_queue[reflec_idx] = idx;
+                    }
+                    if (material.Type == SPECULAR_REFRACTION) {
+                        int refrac_idx = DispatchPathIndex(d_refraction_counter);
+                        d_refraction_queue[refrac_idx] = idx;
                     }
                 }
             }
@@ -1344,8 +1419,10 @@ namespace pathtrace_wavefront
             // 1. Logic Kernel: 处理死掉的光线、生成新光线、累积颜色
             cudaMemset(d_pbr_counter, 0, sizeof(int));
             cudaMemset(d_diffuse_counter, 0, sizeof(int));
-            cudaMemset(d_specular_counter, 0, sizeof(int));
+            cudaMemset(d_reflection_counter, 0, sizeof(int));
+            cudaMemset(d_refraction_counter, 0, sizeof(int));
             cudaMemset(d_new_path_counter, 0, sizeof(int));
+
             PathLogicKernel << <num_blocks_pool, block_size_1d >> > (
                 trace_depth,
                 NUM_PATHS,
@@ -1357,7 +1434,8 @@ namespace pathtrace_wavefront
                 d_texture_objects,
                 d_pbr_queue, d_pbr_counter,
                 d_diffuse_queue, d_diffuse_counter,
-                d_specular_queue, d_specular_counter,
+                d_reflection_queue, d_reflection_counter,
+                d_refraction_queue, d_refraction_counter,
                 d_new_path_queue, d_new_path_counter
                 );
             CHECK_CUDA_ERROR("PathLogicKernel");
@@ -1395,15 +1473,34 @@ namespace pathtrace_wavefront
                 CHECK_CUDA_ERROR("SampleDiffuseMaterialKernel");
             }
 
-            // --- Specular ---
+            // --- reflection ---
             int num_specular_paths = 0;
-            cudaMemcpy(&num_specular_paths, d_specular_counter, sizeof(int), cudaMemcpyDeviceToHost);
+            cudaMemcpy(&num_specular_paths, d_reflection_counter, sizeof(int), cudaMemcpyDeviceToHost);
             if (num_specular_paths > 0) {
                 int blocks = (num_specular_paths + block_size_1d - 1) / block_size_1d;
-                SampleSpecularMaterialKernel << <blocks, block_size_1d >> > (
-                    trace_depth, d_path_state, d_specular_queue, num_specular_paths,
+                sampleSpecularReflectionMaterialKernel << <blocks, block_size_1d >> > (
+                    trace_depth, d_path_state, d_reflection_queue, num_specular_paths,
                     d_extension_ray_queue, d_extension_ray_counter, d_materials, d_mesh_data, d_texture_objects);
-                CHECK_CUDA_ERROR("SampleSpecularMaterialKernel");
+                CHECK_CUDA_ERROR("sampleSpecularReflectionMaterialKernel");
+            }
+
+            // --- refraction ---
+            int num_refraction_paths = 0;
+            cudaMemcpy(&num_refraction_paths, d_refraction_counter, sizeof(int), cudaMemcpyDeviceToHost);
+            if (num_refraction_paths > 0) {
+                int blocks = (num_refraction_paths + block_size_1d - 1) / block_size_1d;
+                sampleSpecularRefractionMaterialKernel << <blocks, block_size_1d >> > (
+                    trace_depth,
+                    d_path_state,
+                    d_refraction_queue,
+                    num_refraction_paths,
+                    d_extension_ray_queue,
+                    d_extension_ray_counter,
+                    d_materials,
+                    d_mesh_data,
+                    d_texture_objects
+                    );
+                CHECK_CUDA_ERROR("sampleSpecularRefractionMaterialKernel");
             }
 
             // 3. Generate New Paths (Camera Rays)

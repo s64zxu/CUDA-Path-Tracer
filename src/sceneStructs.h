@@ -8,8 +8,9 @@
 enum MaterialType
 {
     MicrofacetPBR,
-    IDEAL_DIFFUSE,
-    IDEAL_SPECULAR
+    DIFFUSE,
+    SPECULAR_REFLECTION,
+    SPECULAR_REFRACTION,
 };
 
 struct Camera
@@ -54,6 +55,7 @@ struct Material
     float metallic;
     float roughness;
     float emittance; // if it's a light soure
+    float ior;
     MaterialType Type;
 	// 纹理贴图索引 (-1 表示无贴图)
     int diffuse_tex_id = -1;

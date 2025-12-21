@@ -1,39 +1,23 @@
 {
+  "Camera": {
+    "RES": [ 800, 800 ],
+    "FOVY": 45.0,
+    "ITERATIONS": 2000,
+    "DEPTH": 8,
+    "FILE": "cornell_output",
+    "EYE": [ 0.0, 5.0, 10.5 ],
+    "LOOKAT": [ 0.0, 5.0, 0.0 ],
+    "UP": [ 0.0, 1.0, 0.0 ]
+  },
   "Environment Texture": {
     "FILE": "../scenes/EnvMap/river_alcove_2k.hdr"
   },
-  "Materials": {
-    "mirror": {
-      "Type": "IDEAL_SPECULAR",
-      "basecolor": [ 1.0, 1.0, 1.0 ],
-      "roughness": 0.0,
-      "metallic": 1.0
-    }
-  },
   "Objects": [
     {
-      "FILE": "../scenes/Astartes/Astartes.obj",
-      "MATERIAL": "none",
-      "TRANS": [ 278, 0, 280 ],
-      "ROTAT": [ 0, 180, 0 ],
-      "SCALE": [ 2.0, 2.0, 2.0 ]
-    },
-    {
-      "FILE": "../scenes/floor.obj",
-      "MATERIAL": "none",
       "TRANS": [ 0, 0, 0 ],
       "ROTAT": [ 0, 0, 0 ],
-      "SCALE": [ 1, 1, 1 ]
+      "SCALE": [ 5, 5, 5 ],
+      "FILE": "../scenes/bunny.obj"
     }
-  ],
-  "Camera": {
-    "RES": [ 800, 600 ],
-    "FOVY": 27.8,
-    "ITERATIONS": 5000,
-    "DEPTH": 5,
-    "FILE": "Final_Render.png",
-    "EYE": [ 278, 273, -800 ],
-    "LOOKAT": [ 278, 273, 0 ],
-    "UP": [ 0, 1, 0 ]
-  }
+  ]
 }

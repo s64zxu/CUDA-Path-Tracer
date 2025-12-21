@@ -22,7 +22,7 @@ glm::vec3 cameraPosition;
 static float yaw = -90.0f;   // 偏航角
 static float pitch = 0.0f;   // 俯仰角
 static bool firstMouse = true;
-static float moveSpeed = 5.0f; // 移动速度
+static float moveSpeed = 1.0f; // 移动速度
 static float mouseSensitivity = 0.1f; // 鼠标灵敏度
 
 Scene* scene;

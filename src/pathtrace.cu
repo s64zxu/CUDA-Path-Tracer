@@ -319,7 +319,7 @@ namespace pathtrace_megakernel
                 if (depth > 0 && light_data.num_lights > 0) {
                     bool prevWasSpecular = (last_pdf > (PDF_DIRAC_DELTA * 0.9f));
                     if (!prevWasSpecular) {
-                        float cosLight = glm::max(glm::dot(N_shading, wo), 0.0f);
+                        float cosLight = max(glm::dot(N_shading, wo), 0.0f);
                         if (cosLight > EPSILON) {
                             float pdfLightArea = 1.0f / light_data.total_area;
                             float pdfLightSolidAngle = pdfLightArea * (hit.t * hit.t) / cosLight;
@@ -336,7 +336,7 @@ namespace pathtrace_megakernel
             }
 
             // --- Direct Lighting (NEE) ---
-            if (light_data.num_lights > 0 && material.Type != IDEAL_SPECULAR)
+            if (light_data.num_lights > 0 && material.Type != SPECULAR_REFLECTION)
             {
                 glm::vec3 light_sample_pos;
                 glm::vec3 light_N;
@@ -349,8 +349,8 @@ namespace pathtrace_megakernel
 
                 glm::vec3 wi_L = glm::normalize(light_sample_pos - intersect_point);
                 float dist_L = glm::distance(light_sample_pos, intersect_point);
-                float cosThetaSurf = glm::max(glm::dot(N_shading, wi_L), 0.0f);
-                float cosThetaLight = glm::max(glm::dot(light_N, -wi_L), 0.0f);
+                float cosThetaSurf = max(glm::dot(N_shading, wi_L), 0.0f);
+                float cosThetaLight = max(glm::dot(light_N, -wi_L), 0.0f);
 
                 if (cosThetaSurf > 0.0f && cosThetaLight > 0.0f && pdf_light_area > 0.0f) {
                     int lightMatId = mesh_data.indices_matid[light_idx].w;
@@ -392,11 +392,11 @@ namespace pathtrace_megakernel
             if (material.Type == MicrofacetPBR) {
                 attenuation = samplePBR(wo, next_dir, next_pdf, N_shading, material, seed);
             }
-            else if (material.Type == IDEAL_DIFFUSE) {
+            else if (material.Type == DIFFUSE) {
                 attenuation = sampleDiffuse(wo, next_dir, next_pdf, N_shading, material, seed);
             }
-            else if (material.Type == IDEAL_SPECULAR) {
-                attenuation = sampleSpecular(wo, next_dir, next_pdf, N_shading, material);
+            else if (material.Type == SPECULAR_REFLECTION) {
+                attenuation = sampleSpecularReflection(wo, next_dir, next_pdf, N_shading, material);
             }
 
             if (next_pdf <= 0.0f || glm::length(attenuation) <= 0.0f) {
@@ -412,7 +412,7 @@ namespace pathtrace_megakernel
 
             // --- Russian Roulette ---
             if (depth > RRDEPTH) {
-                float maxChan = glm::max(throughput.r, glm::max(throughput.g, throughput.b));
+                float maxChan = max(throughput.r, max(throughput.g, throughput.b));
                 maxChan = glm::clamp(maxChan, 0.0f, 1.0f);
                 if (rand_float(seed) < maxChan) {
                     throughput /= maxChan;

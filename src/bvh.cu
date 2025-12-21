@@ -172,7 +172,7 @@ __global__ void GenerateHierarchy(LBVHData d_bvh_data, MeshData d_mesh_data)
         }
     }
 
-    int gamma = i + s * dir + min(dir, 0);// glm::min(dir, 0)保证gamma始终指向左子节点
+    int gamma = i + s * dir + min(dir, 0);// min(dir, 0)保证gamma始终指向左子节点
     //int gamma = i + s * dir + (dir > 0 ? 0 : -1);
     int leaf_offset = d_mesh_data.num_triangles;
 
