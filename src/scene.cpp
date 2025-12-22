@@ -386,11 +386,7 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                     Material newMat{};
                     // --- 1. 基础颜色与自发光处理 ---
                     newMat.basecolor = glm::vec3(tMat.diffuse[0], tMat.diffuse[1], tMat.diffuse[2]);
-                    glm::vec3 emission = glm::vec3(tMat.emission[0], tMat.emission[1], tMat.emission[2]);
-                    if (glm::length(emission) < 0.001f) {
-                        glm::vec3 ambient = glm::vec3(tMat.ambient[0], tMat.ambient[1], tMat.ambient[2]);
-                        if (glm::length(ambient) > 1.0f) emission = ambient;
-                    }
+                    glm::vec3 emission = glm::vec3(tMat.emission[0], tMat.emission[1], tMat.emission[2]);      
 
                     if (glm::length(emission) > 0.001f) {
                         newMat.emittance = glm::length(emission);
@@ -514,6 +510,9 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                         float invDet = 1.0f / det;
                         tangent = invDet * (duv2.y * edge1 - duv1.y * edge2);
                     }
+                    // 计算几何法线
+                    glm::vec3 Ng = glm::normalize(glm::cross(edge1, edge2));
+                    this->geom_normals.push_back(Ng);
 
                     // 分配材质 ID 并处理 Unique Vertices
                     int finalMatId = useForcedMaterial ? forcedMatId : (objMaterialStartIdx + std::max(0, shape.mesh.material_ids[f]));

@@ -135,6 +135,8 @@ struct MeshData {
     float4* __restrict__ pos;
     // .xyz = nor, .w = 0.0f
     float4* __restrict__ nor;
+    // .xyz = nor, .w = 0.0f
+    float4* __restrict__ nor_geom;
 	// .xyz = tangent, .w = 0.0f
     float4* __restrict__ tangent;
     // .xy = uv

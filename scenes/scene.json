@@ -5,7 +5,7 @@
     "ITERATIONS": 2000,
     "DEPTH": 8,
     "FILE": "cornell_output",
-    "EYE": [ 0.0, 5.0, 10.5 ],
+    "EYE": [ 0.0, 10.0, 0 ],
     "LOOKAT": [ 0.0, 5.0, 0.0 ],
     "UP": [ 0.0, 1.0, 0.0 ]
   },
@@ -18,6 +18,12 @@
       "ROTAT": [ 0, 0, 0 ],
       "SCALE": [ 5, 5, 5 ],
       "FILE": "../scenes/bunny.obj"
+    },
+    {
+      "TRANS": [ 0, 0, 0 ],
+      "ROTAT": [ 0, 0, 0 ],
+      "SCALE": [ 5, 5, 5 ],
+      "FILE": "../scenes/floor.obj"
     }
   ]
 }

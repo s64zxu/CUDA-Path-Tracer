@@ -22,7 +22,7 @@ glm::vec3 cameraPosition;
 static float yaw = -90.0f;   // 偏航角
 static float pitch = 0.0f;   // 俯仰角
 static bool firstMouse = true;
-static float moveSpeed = 1.0f; // 移动速度
+static float moveSpeed = 10.0f; // 移动速度
 static float mouseSensitivity = 0.1f; // 鼠标灵敏度
 
 Scene* scene;
@@ -115,7 +115,7 @@ int main(int argc, char** argv)
     camchanged = false;
     iteration = 0;
 
-    // 初始化 UI (此时 Window 和 Scene 都 ready 了)
+    // 初始化 UI 
     InitImguiData(guiData);
     InitDataContainer(guiData);
 
@@ -265,7 +265,7 @@ void runCuda()
 
     if (iteration == 0)
     {
-        PathtraceFree();
+        //PathtraceFree();
         PathtraceInit(scene);
     }
 

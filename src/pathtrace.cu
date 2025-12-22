@@ -313,6 +313,14 @@ namespace pathtrace_megakernel
             glm::vec3 intersect_point = ray.origin + ray.direction * hit.t;
             glm::vec3 wo = -ray.direction;
 
+            // ==========================================
+            // [Fix] 获取几何法线 Ng 并进行 FaceForward 处理
+            // ==========================================
+            glm::vec3 Ng = MakeVec3(__ldg(&mesh_data.nor_geom[hit.geom_id]));
+            if (glm::dot(Ng, wo) < 0.0f) {
+                Ng = -Ng;
+            }
+
             // --- Emission Logic ---
             if (material.emittance > 0.0f) {
                 float misWeight = 1.0f;
@@ -369,7 +377,8 @@ namespace pathtrace_megakernel
 
                         if (glm::length(L_potential) > 0.0f) {
                             Ray shadowRay;
-                            shadowRay.origin = intersect_point + N_shading * EPSILON;
+                            // [Fix] 使用几何法线 Ng 进行偏移，防止自遮挡
+                            shadowRay.origin = intersect_point + Ng * EPSILON;
                             shadowRay.direction = wi_L;
                             float t_max = dist_L - 2.0f * EPSILON;
 
@@ -407,7 +416,11 @@ namespace pathtrace_megakernel
             throughput *= attenuation;
             last_pdf = next_pdf;
 
-            ray.origin = intersect_point + N_shading * EPSILON;
+            // [Fix] 使用几何法线 Ng 及其方向进行下一跳光线的偏移
+            bool is_reflect = glm::dot(next_dir, Ng) > 0.0f;
+            glm::vec3 bias_n = is_reflect ? Ng : -Ng;
+            ray.origin = intersect_point + bias_n * EPSILON;
+
             ray.direction = next_dir;
 
             // --- Russian Roulette ---
@@ -560,6 +573,13 @@ namespace pathtrace_megakernel
                 scene->indices[i * 3 + 0], scene->indices[i * 3 + 1], scene->indices[i * 3 + 2], scene->materialIds[i]));
         }
 
+        // [New] 准备几何法线数据
+        std::vector<float4> t_geom_normals;
+        t_geom_normals.reserve(num_tris);
+        for (const auto& ng : scene->geom_normals) {
+            t_geom_normals.push_back(make_float4(ng.x, ng.y, ng.z, 0.0f));
+        }
+
         d_mesh_data.num_vertices = (int)num_verts;
         d_mesh_data.num_triangles = (int)num_tris;
 
@@ -568,12 +588,16 @@ namespace pathtrace_megakernel
         cudaMalloc((void**)&d_mesh_data.tangent, num_verts * sizeof(float4)); // Malloc Tangent
         cudaMalloc((void**)&d_mesh_data.uv, num_verts * sizeof(float2));      // Malloc UV
         cudaMalloc((void**)&d_mesh_data.indices_matid, num_tris * sizeof(int4));
+        // [New] 分配几何法线显存
+        cudaMalloc((void**)&d_mesh_data.nor_geom, num_tris * sizeof(float4));
 
         cudaMemcpy(d_mesh_data.pos, t_pos.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.nor, t_nor.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.tangent, t_tan.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice); // Copy Tangent
         cudaMemcpy(d_mesh_data.uv, t_uv.data(), num_verts * sizeof(float2), cudaMemcpyHostToDevice);       // Copy UV
         cudaMemcpy(d_mesh_data.indices_matid, t_indices_matid.data(), num_tris * sizeof(int4), cudaMemcpyHostToDevice);
+        // [New] 拷贝几何法线
+        cudaMemcpy(d_mesh_data.nor_geom, t_geom_normals.data(), num_tris * sizeof(float4), cudaMemcpyHostToDevice);
 
         // BVH
         int num_nodes = 2 * num_tris;
@@ -611,6 +635,7 @@ namespace pathtrace_megakernel
         cudaFree(d_mesh_data.tangent); // Free Tangent
         cudaFree(d_mesh_data.uv);      // Free UV
         cudaFree(d_mesh_data.indices_matid);
+        cudaFree(d_mesh_data.nor_geom); // [New] Free Geometric Normals
         cudaFree(d_bvh_data.aabb_min);
         cudaFree(d_bvh_data.aabb_max);
         cudaFree(d_bvh_data.primitive_indices);

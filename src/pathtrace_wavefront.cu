@@ -115,6 +115,8 @@ namespace pathtrace_wavefront
     static ShadowQueue d_shadow_queue;
     static int* d_shadow_queue_counter = NULL;
 
+    static bool scene_initialized = false;
+
     void InitDataContainer(GuiDataContainer* imGuiData)
     {
         hst_gui_data = imGuiData;
@@ -197,6 +199,13 @@ namespace pathtrace_wavefront
             ));
         }
 
+        std::vector<float4> t_geom_normals;
+        t_geom_normals.reserve(num_tris);
+
+        for (const auto& ng : scene->geom_normals) {
+            t_geom_normals.push_back(make_float4(ng.x, ng.y, ng.z, 0.0f));
+        }
+
         d_mesh_data.num_vertices = (int)num_verts;
         d_mesh_data.num_triangles = (int)num_tris;
 
@@ -205,12 +214,14 @@ namespace pathtrace_wavefront
 		cudaMalloc((void**)&d_mesh_data.tangent, num_verts * sizeof(float4));
         cudaMalloc((void**)&d_mesh_data.uv, num_verts * sizeof(float2));
         cudaMalloc((void**)&d_mesh_data.indices_matid, num_tris * sizeof(int4));
+        cudaMalloc((void**)&d_mesh_data.nor_geom, num_tris * sizeof(float4));
 
         cudaMemcpy(d_mesh_data.pos, t_pos.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.nor, t_nor.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
 		cudaMemcpy(d_mesh_data.tangent, t_tan.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.uv, t_uv.data(), num_verts * sizeof(float2), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.indices_matid, t_indices_matid.data(), num_tris * sizeof(int4), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_mesh_data.nor_geom, t_geom_normals.data(), num_tris * sizeof(float4), cudaMemcpyHostToDevice);
     }
 
     void FreeSceneGeometry() {
@@ -223,6 +234,7 @@ namespace pathtrace_wavefront
 		cudaFree(d_mesh_data.tangent);
         cudaFree(d_mesh_data.uv);
         cudaFree(d_mesh_data.indices_matid);
+        cudaFree(d_mesh_data.nor_geom);
     }
 
     void InitBVH(Scene* scene) {
@@ -376,65 +388,65 @@ namespace pathtrace_wavefront
         const Camera& cam = hst_scene->state.camera;
 
         // 模块化初始化
-        InitImageSystem(cam);
-        CHECK_CUDA_ERROR("InitImageSystem");
-        InitMaterials(scene);
-        CHECK_CUDA_ERROR("InitMaterials");
-        InitSceneGeometry(scene); // Mesh & Light
-        CHECK_CUDA_ERROR("InitSceneGeometry");
-        InitBVH(scene);
-        CHECK_CUDA_ERROR("InitBVH");
-        InitTextures(scene);
-        CHECK_CUDA_ERROR("InitTextures");
-        InitEnvAliasTable(scene);
-        CHECK_CUDA_ERROR("InitEnvAliasTable");
-        InitWavefront(NUM_PATHS); // Path State & Queues
-
-        printf("\n====== Path Tracer Scene Information ======\n");
-
-        // 1. 材质种类统计
-        int count_pbr = 0;
-        int count_diffuse = 0;
-        int count_reflection = 0;
-        int count_refraction = 0;
-        for (const auto& mat : scene->materials) {
-            if (mat.Type == MicrofacetPBR) count_pbr++;
-            else if (mat.Type == DIFFUSE) count_diffuse++;
-            else if (mat.Type == SPECULAR_REFLECTION) count_reflection++;
-            else count_refraction++;
+        if (d_image == NULL) {
+            InitImageSystem(cam);
         }
 
-        // 2. 各材质对应的三角形面数统计
-        long long faces_pbr = 0;
-        long long faces_diffuse = 0;
-        long long faces_reflection = 0;
-        long long faces_refraction = 0;
-
-        for (int matId : scene->materialIds) {
-            if (matId >= 0 && matId < scene->materials.size()) {
-                MaterialType type = scene->materials[matId].Type;
-                if (type == MicrofacetPBR) faces_pbr++;
-                else if (type == DIFFUSE) faces_diffuse++;
-                else if (type == SPECULAR_REFLECTION) faces_reflection++;
-                else faces_refraction++;
+        if (d_materials == NULL) {
+            InitMaterials(scene);
+        }
+        if (!scene_initialized) {
+            InitSceneGeometry(scene);
+            InitBVH(scene);
+            InitTextures(scene);
+            InitEnvAliasTable(scene);
+            InitWavefront(NUM_PATHS);
+            scene_initialized = true;
+            printf("\n====== Path Tracer Scene Information ======\n");
+            // 1. 材质种类统计
+            int count_pbr = 0;
+            int count_diffuse = 0;
+            int count_reflection = 0;
+            int count_refraction = 0;
+            for (const auto& mat : scene->materials) {
+                if (mat.Type == MicrofacetPBR) count_pbr++;
+                else if (mat.Type == DIFFUSE) count_diffuse++;
+                else if (mat.Type == SPECULAR_REFLECTION) count_reflection++;
+                else count_refraction++;
             }
+
+            // 2. 各材质对应的三角形面数统计
+            long long faces_pbr = 0;
+            long long faces_diffuse = 0;
+            long long faces_reflection = 0;
+            long long faces_refraction = 0;
+
+            for (int matId : scene->materialIds) {
+                if (matId >= 0 && matId < scene->materials.size()) {
+                    MaterialType type = scene->materials[matId].Type;
+                    if (type == MicrofacetPBR) faces_pbr++;
+                    else if (type == DIFFUSE) faces_diffuse++;
+                    else if (type == SPECULAR_REFLECTION) faces_reflection++;
+                    else faces_refraction++;
+                }
+            }
+
+            // 打印材质信息
+            std::cout << "[Material] Total Materials: " << scene->materials.size() << std::endl;
+            std::cout << "  > Microfacet PBR: " << count_pbr << " types, " << faces_pbr << " faces" << std::endl;
+            std::cout << "  > Ideal Diffuse:  " << count_diffuse << " types, " << faces_diffuse << " faces" << std::endl;
+            std::cout << "  > Ideal Reflection: " << count_reflection << " types, " << faces_reflection << " faces" << std::endl;
+            std::cout << "  > Ideal Refraction: " << count_refraction << " types, " << faces_refraction << " faces" << std::endl;
+
+            // 几何与灯光信息
+            std::cout << "[Geometry] Total Vertices:  " << scene->vertices.size() << std::endl;
+            std::cout << "[Geometry] Total Triangles: " << (scene->indices.size() / 3) << std::endl;
+            std::cout << "[Light] Emissive Triangles: " << scene->lightInfo.num_lights << std::endl;
+            std::cout << "[Light] Total Light Area:   " << scene->lightInfo.total_area << std::endl;
+            printf("============================================\n");
+
+            CHECK_CUDA_ERROR("PathtraceInit");
         }
-
-        // 打印材质信息
-        std::cout << "[Material] Total Materials: " << scene->materials.size() << std::endl;
-        std::cout << "  > Microfacet PBR: " << count_pbr << " types, " << faces_pbr << " faces" << std::endl;
-        std::cout << "  > Ideal Diffuse:  " << count_diffuse << " types, " << faces_diffuse << " faces" << std::endl;
-        std::cout << "  > Ideal Reflection: " << count_reflection << " types, " << faces_reflection << " faces" << std::endl;
-        std::cout << "  > Ideal Refraction: " << count_refraction << " types, " << faces_refraction << " faces" << std::endl;
-
-        // 几何与灯光信息
-        std::cout << "[Geometry] Total Vertices:  " << scene->vertices.size() << std::endl;
-        std::cout << "[Geometry] Total Triangles: " << (scene->indices.size() / 3) << std::endl;
-        std::cout << "[Light] Emissive Triangles: " << scene->lightInfo.num_lights << std::endl;
-        std::cout << "[Light] Total Light Area:   " << scene->lightInfo.total_area << std::endl;
-        printf("============================================\n");
-
-        CHECK_CUDA_ERROR("PathtraceInit");
     }
 
     void PathtraceFree()
@@ -743,7 +755,7 @@ namespace pathtrace_wavefront
         MeshData mesh_data,
         LightData light_data, // Modified: Pass struct
         Material* d_materials,
-        glm::vec3 intersect_point, glm::vec3 N, glm::vec3 wo,
+        glm::vec3 intersect_point, glm::vec3 N, glm::vec3 Ng, glm::vec3 wo,
         Material material, unsigned int seed, glm::vec3 throughput, int pixel_idx,
         ShadowQueue d_shadow_queue, int* d_shadow_queue_counter)
     {
@@ -803,9 +815,9 @@ namespace pathtrace_wavefront
 
                     // Optimized Write
                     d_shadow_queue.ray_ori_tmax[shadow_idx] = make_float4(
-                        intersect_point.x + N.x * EPSILON,
-                        intersect_point.y + N.y * EPSILON,
-                        intersect_point.z + N.z * EPSILON,
+                        intersect_point.x + Ng.x * EPSILON,
+                        intersect_point.y + Ng.y * EPSILON,
+                        intersect_point.z + Ng.z * EPSILON,
                         dist - 2.0f * EPSILON); // .w = tmax
 
                     d_shadow_queue.ray_dir[shadow_idx] = make_float4(wi.x, wi.y, wi.z, 0.0f);
@@ -822,15 +834,15 @@ namespace pathtrace_wavefront
         int* d_extension_queue, int* d_extension_counter,
         int trace_depth, unsigned int seed,
         glm::vec3 throughput, glm::vec3 attenuation,
-        glm::vec3 intersect_point, glm::vec3 N,
+        glm::vec3 intersect_point, glm::vec3 Ng,
         glm::vec3 next_dir, float next_pdf)
     {
         if (next_pdf > 0.0f && glm::length(attenuation) > 0.0f) {
             // directly apply attenuation (different from the paper)
             throughput *= attenuation;
 
-            bool is_reflect = glm::dot(next_dir, N) > 0.0f;
-            glm::vec3 bias_n = is_reflect ? N : -N;
+            bool is_reflect = glm::dot(next_dir, Ng) > 0.0f;
+            glm::vec3 bias_n = is_reflect ? Ng : -Ng;
 
             // common updates when path survives
             // .w = next_pdf
@@ -945,6 +957,8 @@ namespace pathtrace_wavefront
             float4 hit_uv = d_path_state.hit_normal[idx];
             int prim_id = d_path_state.hit_geom_id[idx];
 
+            // 获取几何法线
+            glm::vec3 Ng = MakeVec3(__ldg(&d_mesh_data.nor_geom[prim_id]));
             // 获取着色法线
             glm::vec3 N = GetShadingNormal(d_mesh_data, d_materials, d_texture_objects, prim_id, hit_uv.x, hit_uv.y); // shading normal
 
@@ -975,13 +989,17 @@ namespace pathtrace_wavefront
             glm::vec3 intersect_point = ray_ori + ray_dir * ray_t;
             glm::vec3 wo = -ray_dir;
 
+            if (glm::dot(Ng, wo) < 0.0f) {
+                Ng = -Ng;
+            }
+
             unsigned int local_seed = d_path_state.rng_state[idx];
 
             // 3. NEE (UPDATED CALL)
             ComputeNextEventEstimation(
                 d_mesh_data, d_light_data, // Pass struct
                 d_materials,
-                intersect_point, N, wo, material, local_seed, throughput, pixel_idx,
+                intersect_point, N, Ng, wo, material, local_seed, throughput, pixel_idx,
                 d_shadow_queue, d_shadow_queue_counter);
 
             // 4. BSDF Sampling
@@ -991,7 +1009,7 @@ namespace pathtrace_wavefront
 
             // 5. Update Path
             UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed,
-                throughput, attenuation, intersect_point, N, next_dir, next_pdf);
+                throughput, attenuation, intersect_point, Ng, next_dir, next_pdf);
         }
     }
 
@@ -1021,6 +1039,9 @@ namespace pathtrace_wavefront
             float4 hit_uv = d_path_state.hit_normal[idx];
             int prim_id = d_path_state.hit_geom_id[idx];
 
+            // 获取几何法线
+            glm::vec3 Ng = MakeVec3(__ldg(&d_mesh_data.nor_geom[prim_id]));
+
             // 获取着色法线
             glm::vec3 N = GetShadingNormal(d_mesh_data, d_materials, d_texture_objects, prim_id, hit_uv.x, hit_uv.y); // shading normal
 
@@ -1049,7 +1070,7 @@ namespace pathtrace_wavefront
             ComputeNextEventEstimation(
                 d_mesh_data, d_light_data, // Pass Struct
                 d_materials,
-                intersect_point, N, wo, material, local_seed, throughput, pixel_idx,
+                intersect_point, N, Ng, wo, material, local_seed, throughput, pixel_idx,
                 d_shadow_queue, d_shadow_queue_counter);
 
             // 4. BSDF Sampling
@@ -1059,7 +1080,7 @@ namespace pathtrace_wavefront
 
             // 5. Update Path
             UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed,
-                throughput, attenuation, intersect_point, N, next_dir, next_pdf);
+                throughput, attenuation, intersect_point, Ng, next_dir, next_pdf);
         }
     }
 
@@ -1088,6 +1109,10 @@ namespace pathtrace_wavefront
 
             float4 hit_uv = d_path_state.hit_normal[idx];
             int prim_id = d_path_state.hit_geom_id[idx];
+
+            // 获取几何法线
+            glm::vec3 Ng = MakeVec3(__ldg(&d_mesh_data.nor_geom[prim_id]));
+
             glm::vec3 N = GetShadingNormal(d_mesh_data, d_materials, d_texture_objects, prim_id, hit_uv.x, hit_uv.y); // shading normal
 
             float ray_t = dir_dist.w;
@@ -1114,7 +1139,7 @@ namespace pathtrace_wavefront
 
             // 4. 更新 Path State
             UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed,
-                throughput, attenuation, intersect_point, N, next_dir, next_pdf);
+                throughput, attenuation, intersect_point, Ng, next_dir, next_pdf);
         }
     }
 
@@ -1143,6 +1168,8 @@ namespace pathtrace_wavefront
 
             float4 hit_uv = d_path_state.hit_normal[idx];
             int prim_id = d_path_state.hit_geom_id[idx];
+            // 获取几何法线
+            glm::vec3 Ng = MakeVec3(__ldg(&d_mesh_data.nor_geom[prim_id]));
             glm::vec3 N = GetShadingNormal(d_mesh_data, d_materials, d_texture_objects, prim_id, hit_uv.x, hit_uv.y); // shading normal
 
             float ray_t = dir_dist.w;
@@ -1169,7 +1196,7 @@ namespace pathtrace_wavefront
 
             // 4. 更新 Path State
             UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed,
-                throughput, attenuation, intersect_point, N, next_dir, next_pdf);
+                throughput, attenuation, intersect_point, Ng, next_dir, next_pdf);
         }
     }
 
@@ -1413,7 +1440,7 @@ namespace pathtrace_wavefront
             CHECK_CUDA_ERROR("InitPathPoolKernel");
         }
 
-        for (int step = 0; step < trace_depth; step++)
+        for (int step = 0; step < 2; step++)
         {
             // --- PathSegment Tracing Stage ---
             // 1. Logic Kernel: 处理死掉的光线、生成新光线、累积颜色

@@ -78,8 +78,9 @@ public:
     RenderState state;
 
     std::vector<Vertex> vertices;
-    std::vector<int32_t> indices;
-    std::vector<int32_t> materialIds;
+    std::vector<int32_t> indices; // 连续存储的三个索引对应三角形的三个顶点
+    std::vector<int32_t> materialIds; // 存储每个三角形对应的材质信息
+    std::vector<glm::vec3> geom_normals; // 存储每个三角形对应的几何法线信息
     LightInfo lightInfo;
 
     std::vector<cudaTextureObject_t> texture_handles;
