@@ -84,8 +84,6 @@ int main(int argc, char** argv)
 
     init();
 #else
-    // HEADLESS 模式：没有 init()，我们需要手动设置 CUDA Flags
-    // 这步非常关键，否则后面 new Scene 时会用默认 Flags 初始化，可能导致性能问题或错误
     cudaSetDevice(0);
     cudaSetDeviceFlags(cudaDeviceScheduleSpin | cudaDeviceMapHost);
     cudaFree(0); // 强制初始化上下文
@@ -130,7 +128,7 @@ int main(int argc, char** argv)
 
     PathtraceInit(scene);
 
-    int total_iterations = renderState->iterations;
+    int total_iterations = 120;
 
     for (int i = 1; i <= total_iterations; ++i) {
         iteration = i;

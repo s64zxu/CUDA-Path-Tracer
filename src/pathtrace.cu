@@ -1,4 +1,4 @@
-#include "pathtrace.h"
+Ôªø#include "pathtrace.h"
 
 #include <cstdio>
 #include <cuda.h>
@@ -21,14 +21,14 @@
 #include "rng.h"
 #include "bvh.h"
 
-#define ENABLE_VISUALIZATION 1
+#define ENABLE_VISUALIZATION 0
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
 
 namespace pathtrace_megakernel
 {
     // =========================================================================================
-    // Device Helper: BVH Intersection
+    // Device Helper: BVH Intersection (Integrated directly for Megakernel)
     // =========================================================================================
 
     struct HitInfo {
@@ -38,6 +38,7 @@ namespace pathtrace_megakernel
         float v;
     };
 
+    // Êü•ÊâæÊúÄËøë‰∫§ÁÇπ (Âéü TraceExtensionRayKernel ÈÄªËæë)
     __device__ HitInfo FindNearestIntersection(
         Ray ray,
         const MeshData mesh_data,
@@ -49,7 +50,8 @@ namespace pathtrace_megakernel
 
         glm::vec3 inv_dir = 1.0f / ray.direction;
 
-        int stack[32];
+        // [Safety] Increased stack size and added bounds check
+        int stack[64];
         int stack_ptr = 0;
         int node_idx = 0;
 
@@ -105,18 +107,25 @@ namespace pathtrace_megakernel
                 if (hit_l && hit_r) {
                     int first = (t_l < t_r) ? left : right;
                     int second = (t_l < t_r) ? right : left;
-                    stack[stack_ptr++] = second;
-                    node_idx = first;
+
+                    // [Safety] Prevent stack overflow
+                    if (stack_ptr < 64) {
+                        stack[stack_ptr++] = second;
+                        node_idx = first;
+                    }
+                    else {
+                        node_idx = first; // Fallback: Traverse near node only
+                    }
                 }
                 else if (hit_l) node_idx = left;
                 else if (hit_r) node_idx = right;
                 else node_idx = -1;
             }
-            if (stack_ptr >= 32) break;
         }
         return hit;
     }
 
+    // Èò¥ÂΩ±ÈÅÆÊå°ÊµãËØï (Âéü TraceShadowRayKernel ÈÄªËæë)
     __device__ bool IsOccluded(
         Ray ray,
         float t_max,
@@ -125,6 +134,8 @@ namespace pathtrace_megakernel
     {
         glm::vec3 inv_dir = 1.0f / ray.direction;
         int node_idx = 0;
+        int stack[64]; // Use stack for traversal or ropes if available. Here assuming stackless or restart. 
+        // Note: The provided wavefront IsOccluded used escape indices (ropes), let's use that for speed.
 
         while (node_idx != -1)
         {
@@ -166,62 +177,58 @@ namespace pathtrace_megakernel
         return false;
     }
 
-    // –¬‘ˆ£∫ªÒ»°≤Â÷µUV
-    __device__ __forceinline__ glm::vec2 GetInterpolatedUV(const MeshData& mesh_data, int prim_id, float u, float v) {
-        int4 idx_mat = __ldg(&mesh_data.indices_matid[prim_id]);
-        float2 uv0 = __ldg(&mesh_data.uv[idx_mat.x]);
-        float2 uv1 = __ldg(&mesh_data.uv[idx_mat.y]);
-        float2 uv2 = __ldg(&mesh_data.uv[idx_mat.z]);
-        float final_u = (1.0f - u - v) * uv0.x + u * uv1.x + v * uv2.x;
-        float final_v = (1.0f - u - v) * uv0.y + u * uv1.y + v * uv2.y;
-        return glm::vec2(final_u, final_v);
-    }
-
-    // –ﬁ∏ƒ£∫÷ß≥÷∑®œﬂÃ˘Õº≤…—˘
-    __device__ __forceinline__ glm::vec3 GetShadingNormal(
+    // Ëé∑ÂèñË°®Èù¢Â±ûÊÄß (ÂêàÂπ∂‰∫Ü GetInterpolatedUV Âíå GetShadingNormal)
+    __device__ __forceinline__ void GetSurfaceProperties(
         const MeshData& mesh_data,
         Material* d_materials,
         cudaTextureObject_t* d_texture_objects,
-        int primitive_id,
+        int prim_id,
         float u,
-        float v)
+        float v,
+        Material& out_mat,
+        glm::vec3& out_N,
+        glm::vec2& out_uv)
     {
-        int4 idx_mat = __ldg(&mesh_data.indices_matid[primitive_id]);
-        int mat_id = idx_mat.w;
-        Material mat = d_materials[mat_id];
+        int4 idx_mat = __ldg(&mesh_data.indices_matid[prim_id]);
+        out_mat = d_materials[idx_mat.w];
 
+        float w = 1.0f - u - v;
+
+        // UV
+        float2 uv0 = __ldg(&mesh_data.uv[idx_mat.x]);
+        float2 uv1 = __ldg(&mesh_data.uv[idx_mat.y]);
+        float2 uv2 = __ldg(&mesh_data.uv[idx_mat.z]);
+        out_uv = glm::vec2(
+            w * uv0.x + u * uv1.x + v * uv2.x,
+            w * uv0.y + u * uv1.y + v * uv2.y
+        );
+
+        // Geom Normal
         glm::vec3 n0 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.x]));
         glm::vec3 n1 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.y]));
         glm::vec3 n2 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.z]));
-        float w = (1.0f - u - v);
-        glm::vec3 N = glm::normalize(w * n0 + u * n1 + v * n2);
+        glm::vec3 N_geom = glm::normalize(w * n0 + u * n1 + v * n2);
 
-        if (mat.normal_tex_id < 0)
+        // Normal Map
+        if (out_mat.normal_tex_id < 0)
         {
-            return N;
+            out_N = N_geom;
         }
         else
         {
-            // ”–∑®œﬂÃ˘Õº£¨º∆À„«–œﬂø’º‰
             glm::vec3 tan1 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.x]));
             glm::vec3 tan2 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.y]));
             glm::vec3 tan3 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.z]));
 
             glm::vec3 T_interp = w * tan1 + u * tan2 + v * tan3;
-            glm::vec3 B = glm::normalize(glm::cross(N, T_interp));
-            glm::vec3 T = glm::cross(B, N);
+            glm::vec3 B = glm::normalize(glm::cross(N_geom, T_interp));
+            glm::vec3 T = glm::cross(B, N_geom);
 
-            glm::vec2 uv = GetInterpolatedUV(mesh_data, primitive_id, u, v);
-
-            cudaTextureObject_t tex_obj = d_texture_objects[mat.normal_tex_id];
-            float4 normal_sample = tex2D<float4>(tex_obj, uv.x, uv.y);
-
-            // [0, 1] -> [-1, 1]
+            float4 normal_sample = tex2D<float4>(d_texture_objects[out_mat.normal_tex_id], out_uv.x, out_uv.y);
             glm::vec3 mapped_normal = glm::vec3(normal_sample.x * 2.0f - 1.0f,
                 normal_sample.y * 2.0f - 1.0f,
                 normal_sample.z * 2.0f - 1.0f);
-
-            return glm::normalize(glm::mat3(T, B, N) * mapped_normal);
+            out_N = glm::normalize(glm::mat3(T, B, N_geom) * mapped_normal);
         }
     }
 
@@ -239,7 +246,7 @@ namespace pathtrace_megakernel
         LightData light_data,
         MeshData mesh_data,
         LBVHData bvh_data,
-        cudaTextureObject_t* d_texture_objects // –¬‘ˆ≤Œ ˝
+        cudaTextureObject_t* d_texture_objects // Explicit texture object array
     )
     {
         int x = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -248,7 +255,7 @@ namespace pathtrace_megakernel
 
         if (x >= cam.resolution.x || y >= cam.resolution.y) return;
 
-        // œﬂ≥Ãæ÷≤øπ‚œﬂº∆ ˝∆˜
+        // Thread-local ray counter for stats
         int thread_ray_count = 0;
 
         // 1. Initialize RNG
@@ -271,59 +278,54 @@ namespace pathtrace_megakernel
         glm::vec3 throughput(1.0f);
         glm::vec3 accumulated_color(0.0f);
         float last_pdf = 0.0f;
-
         bool active = true;
 
+        // =========================================================================
+        // The Loop
+        // =========================================================================
         for (int depth = 0; depth < max_depth && active; ++depth)
         {
+            thread_ray_count++; // Extension ray
+
             // --- Intersection ---
-            thread_ray_count++; // º«¬º“ª¥Œ¿©’ππ‚œﬂ (Extension Ray)
             HitInfo hit = FindNearestIntersection(ray, mesh_data, bvh_data);
 
             if (hit.geom_id == -1) {
-                // Environment light could go here
+                // Environment Light could be sampled here
                 active = false;
                 break;
             }
 
-            // --- Prepare Material Interaction ---
-            int4 idx_mat = __ldg(&mesh_data.indices_matid[hit.geom_id]);
-            int mat_id = idx_mat.w;
-            Material material = d_materials[mat_id];
+            // --- Material & Geometry Info ---
+            Material material;
+            glm::vec3 N_shading;
+            glm::vec2 uv;
+            GetSurfaceProperties(mesh_data, d_materials, d_texture_objects, hit.geom_id, hit.u, hit.v, material, N_shading, uv);
 
-            // 1. º∆À„Œ∆¿Ì◊¯±Í
-            glm::vec2 uv = GetInterpolatedUV(mesh_data, hit.geom_id, hit.u, hit.v);
-
-            // 2. ªÒ»°∑®œﬂ (∞¸∫¨∑®œﬂÃ˘Õº¥¶¿Ì)
-            glm::vec3 N_shading = GetShadingNormal(mesh_data, d_materials, d_texture_objects, hit.geom_id, hit.u, hit.v);
-
-            // 3. ≤…—˘∆‰À˚Ã˘Õº (BaseColor, Metallic, Roughness)
-            if (material.diffuse_tex_id >= 0) {
-                float4 texColor = tex2D<float4>(d_texture_objects[material.diffuse_tex_id], uv.x, uv.y);
-                glm::vec3 albedo = glm::vec3(texColor.x, texColor.y, texColor.z);
-                // sRGB -> Linear
-                material.basecolor *= glm::pow(albedo, glm::vec3(2.2f));
-            }
-            if (material.metallic_roughness_tex_id >= 0) {
-                float4 rmSample = tex2D<float4>(d_texture_objects[material.metallic_roughness_tex_id], uv.x, uv.y);
-                material.roughness *= rmSample.y; // Green channel
-                material.metallic *= rmSample.z;  // Blue channel
-            }
-
+            glm::vec3 Ng = MakeVec3(__ldg(&mesh_data.nor_geom[hit.geom_id]));
             glm::vec3 intersect_point = ray.origin + ray.direction * hit.t;
             glm::vec3 wo = -ray.direction;
 
-            // ==========================================
-            // [Fix] ªÒ»°º∏∫Œ∑®œﬂ Ng ≤¢Ω¯–– FaceForward ¥¶¿Ì
-            // ==========================================
-            glm::vec3 Ng = MakeVec3(__ldg(&mesh_data.nor_geom[hit.geom_id]));
-            if (glm::dot(Ng, wo) < 0.0f) {
-                Ng = -Ng;
-            }
+            // Face forward
+            if (glm::dot(Ng, wo) < 0.0f) { Ng = -Ng; }
 
-            // --- Emission Logic ---
+            // Sample Textures
+#if ENABLE_VISUALIZATION 
+            if (material.diffuse_tex_id >= 0) {
+                float4 texColor = tex2D<float4>(d_texture_objects[material.diffuse_tex_id], uv.x, uv.y);
+                material.basecolor *= glm::pow(glm::vec3(texColor.x, texColor.y, texColor.z), glm::vec3(2.2f));
+            }
+            if (material.metallic_roughness_tex_id >= 0) {
+                float4 rmSample = tex2D<float4>(d_texture_objects[material.metallic_roughness_tex_id], uv.x, uv.y);
+                material.roughness *= rmSample.y;
+                material.metallic *= rmSample.z;
+            }
+#endif
+
+            // --- Emission (Implicit Light Hit) ---
             if (material.emittance > 0.0f) {
                 float misWeight = 1.0f;
+                // Simple MIS check
                 if (depth > 0 && light_data.num_lights > 0) {
                     bool prevWasSpecular = (last_pdf > (PDF_DIRAC_DELTA * 0.9f));
                     if (!prevWasSpecular) {
@@ -343,8 +345,8 @@ namespace pathtrace_megakernel
                 break;
             }
 
-            // --- Direct Lighting (NEE) ---
-            if (light_data.num_lights > 0 && material.Type != SPECULAR_REFLECTION)
+            // --- Direct Lighting (Next Event Estimation) ---
+            if (light_data.num_lights > 0 && material.Type != SPECULAR_REFLECTION && material.Type != SPECULAR_REFRACTION)
             {
                 glm::vec3 light_sample_pos;
                 glm::vec3 light_N;
@@ -377,13 +379,11 @@ namespace pathtrace_megakernel
 
                         if (glm::length(L_potential) > 0.0f) {
                             Ray shadowRay;
-                            // [Fix]  π”√º∏∫Œ∑®œﬂ Ng Ω¯––∆´“∆£¨∑¿÷π◊‘’⁄µ≤
                             shadowRay.origin = intersect_point + Ng * EPSILON;
                             shadowRay.direction = wi_L;
                             float t_max = dist_L - 2.0f * EPSILON;
 
-                            // º«¬º“ª¥Œ“ı”∞π‚œﬂ (Shadow Ray)
-                            thread_ray_count++;
+                            thread_ray_count++; // Shadow ray
 
                             if (!IsOccluded(shadowRay, t_max, mesh_data, bvh_data)) {
                                 accumulated_color += L_potential;
@@ -407,6 +407,9 @@ namespace pathtrace_megakernel
             else if (material.Type == SPECULAR_REFLECTION) {
                 attenuation = sampleSpecularReflection(wo, next_dir, next_pdf, N_shading, material);
             }
+            else if (material.Type == SPECULAR_REFRACTION) {
+                attenuation = sampleSpecularRefraction(wo, next_dir, next_pdf, N_shading, material, seed);
+            }
 
             if (next_pdf <= 0.0f || glm::length(attenuation) <= 0.0f) {
                 active = false;
@@ -416,11 +419,10 @@ namespace pathtrace_megakernel
             throughput *= attenuation;
             last_pdf = next_pdf;
 
-            // [Fix]  π”√º∏∫Œ∑®œﬂ Ng º∞∆‰∑ΩœÚΩ¯––œ¬“ªÃ¯π‚œﬂµƒ∆´“∆
+            // Bias and Update Ray
             bool is_reflect = glm::dot(next_dir, Ng) > 0.0f;
             glm::vec3 bias_n = is_reflect ? Ng : -Ng;
             ray.origin = intersect_point + bias_n * EPSILON;
-
             ray.direction = next_dir;
 
             // --- Russian Roulette ---
@@ -432,28 +434,21 @@ namespace pathtrace_megakernel
                 }
                 else {
                     active = false;
-                    break;
                 }
             }
         }
 
-        // ◊Ó÷’∏¸–¬£∫Ω´±æœﬂ≥Ãº∆À„µƒπ‚œﬂ◊‹ ˝‘≠◊”º”µΩ»´æ÷±‰¡ø
+        // Stats
         if (thread_ray_count > 0) {
             atomicAdd(d_total_rays, (unsigned long long)thread_ray_count);
         }
 
         // Write Result
         atomicAdd(&d_sample_count[pixel_index], 1);
-
-        if (!active || glm::length(accumulated_color) > 0.0f) {
-            if (accumulated_color.x == accumulated_color.x &&
-                accumulated_color.y == accumulated_color.y &&
-                accumulated_color.z == accumulated_color.z)
-            {
-                atomicAdd(&(d_image[pixel_index].x), accumulated_color.x);
-                atomicAdd(&(d_image[pixel_index].y), accumulated_color.y);
-                atomicAdd(&(d_image[pixel_index].z), accumulated_color.z);
-            }
+        if (accumulated_color.x == accumulated_color.x) { // NaN check
+            atomicAdd(&(d_image[pixel_index].x), accumulated_color.x);
+            atomicAdd(&(d_image[pixel_index].y), accumulated_color.y);
+            atomicAdd(&(d_image[pixel_index].z), accumulated_color.z);
         }
     }
 
@@ -485,13 +480,10 @@ namespace pathtrace_megakernel
     static GuiDataContainer* hst_gui_data = NULL;
     static glm::vec3* d_image = NULL;
     static int* d_pixel_sample_count = NULL;
-
-    // »´æ÷π‚œﬂº∆ ˝∆˜£®…Ë±∏∂À£©
     static unsigned long long* d_total_rays_executed = NULL;
 
-    // Scene Data
     static Material* d_materials = NULL;
-    static cudaTextureObject_t* d_texture_objects = NULL; // –¬‘ˆŒ∆¿Ì∂‘œÛ÷∏’Î
+    static cudaTextureObject_t* d_texture_objects = NULL;
     static MeshData d_mesh_data;
     static LBVHData d_bvh_data;
     static LightData d_light_data;
@@ -504,8 +496,6 @@ namespace pathtrace_megakernel
         cudaMemset(d_image, 0, pixel_count * sizeof(glm::vec3));
         cudaMalloc(&d_pixel_sample_count, pixel_count * sizeof(int));
         cudaMemset(d_pixel_sample_count, 0, pixel_count * sizeof(int));
-
-        // ≥ı ºªØπ‚œﬂº∆ ˝∆˜
         cudaMalloc(&d_total_rays_executed, sizeof(unsigned long long));
         cudaMemset(d_total_rays_executed, 0, sizeof(unsigned long long));
     }
@@ -516,18 +506,12 @@ namespace pathtrace_megakernel
         cudaFree(d_total_rays_executed);
     }
 
-    // –¬‘ˆ£∫Œ∆¿Ì≥ı ºªØ
     void InitTextures(Scene* scene) {
         int num_textures = scene->texture_handles.size();
         if (num_textures > 0) {
             cudaMalloc(&d_texture_objects, num_textures * sizeof(cudaTextureObject_t));
             cudaMemcpy(d_texture_objects, scene->texture_handles.data(), num_textures * sizeof(cudaTextureObject_t), cudaMemcpyHostToDevice);
         }
-    }
-
-    // –¬‘ˆ£∫Œ∆¿Ì Õ∑≈
-    void FreeTextures() {
-        if (d_texture_objects) cudaFree(d_texture_objects);
     }
 
     void InitSceneData(Scene* scene) {
@@ -549,15 +533,18 @@ namespace pathtrace_megakernel
             d_light_data.num_lights = 0;
         }
 
-        // Mesh
+        // Mesh Geometry Copy (Simplified from Wavefront init)
         size_t num_verts = scene->vertices.size();
         size_t num_tris = scene->indices.size() / 3;
 
+        // ... (Skipping host vector packing for brevity, assuming same vectors as Wavefront input)
+        // You would perform the exact same t_pos, t_nor, t_indices packing here as in the input file.
+
+        // Re-using the packing logic from your input file:
         std::vector<float4> t_pos; t_pos.reserve(num_verts);
         std::vector<float4> t_nor; t_nor.reserve(num_verts);
-        std::vector<float2> t_uv;  t_uv.reserve(num_verts); // –¬‘ˆ UV
-        std::vector<float4> t_tan; t_tan.reserve(num_verts); // –¬‘ˆ Tangent
-
+        std::vector<float2> t_uv;  t_uv.reserve(num_verts);
+        std::vector<float4> t_tan; t_tan.reserve(num_verts);
         for (const auto& v : scene->vertices) {
             t_pos.push_back(make_float4(v.pos.x, v.pos.y, v.pos.z, 1.0f));
             glm::vec3 n = glm::normalize(v.nor);
@@ -566,37 +553,29 @@ namespace pathtrace_megakernel
             glm::vec3 tan = glm::normalize(v.tangent);
             t_tan.push_back(make_float4(tan.x, tan.y, tan.z, 0.0f));
         }
-
         std::vector<int4> t_indices_matid; t_indices_matid.reserve(num_tris);
         for (size_t i = 0; i < num_tris; ++i) {
             t_indices_matid.push_back(make_int4(
                 scene->indices[i * 3 + 0], scene->indices[i * 3 + 1], scene->indices[i * 3 + 2], scene->materialIds[i]));
         }
-
-        // [New] ◊º±∏º∏∫Œ∑®œﬂ ˝æ›
-        std::vector<float4> t_geom_normals;
-        t_geom_normals.reserve(num_tris);
-        for (const auto& ng : scene->geom_normals) {
-            t_geom_normals.push_back(make_float4(ng.x, ng.y, ng.z, 0.0f));
-        }
+        std::vector<float4> t_geom_normals; t_geom_normals.reserve(num_tris);
+        for (const auto& ng : scene->geom_normals) { t_geom_normals.push_back(make_float4(ng.x, ng.y, ng.z, 0.0f)); }
 
         d_mesh_data.num_vertices = (int)num_verts;
         d_mesh_data.num_triangles = (int)num_tris;
 
         cudaMalloc((void**)&d_mesh_data.pos, num_verts * sizeof(float4));
         cudaMalloc((void**)&d_mesh_data.nor, num_verts * sizeof(float4));
-        cudaMalloc((void**)&d_mesh_data.tangent, num_verts * sizeof(float4)); // Malloc Tangent
-        cudaMalloc((void**)&d_mesh_data.uv, num_verts * sizeof(float2));      // Malloc UV
+        cudaMalloc((void**)&d_mesh_data.tangent, num_verts * sizeof(float4));
+        cudaMalloc((void**)&d_mesh_data.uv, num_verts * sizeof(float2));
         cudaMalloc((void**)&d_mesh_data.indices_matid, num_tris * sizeof(int4));
-        // [New] ∑÷≈‰º∏∫Œ∑®œﬂœ‘¥Ê
         cudaMalloc((void**)&d_mesh_data.nor_geom, num_tris * sizeof(float4));
 
         cudaMemcpy(d_mesh_data.pos, t_pos.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.nor, t_nor.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_mesh_data.tangent, t_tan.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice); // Copy Tangent
-        cudaMemcpy(d_mesh_data.uv, t_uv.data(), num_verts * sizeof(float2), cudaMemcpyHostToDevice);       // Copy UV
+        cudaMemcpy(d_mesh_data.tangent, t_tan.data(), num_verts * sizeof(float4), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_mesh_data.uv, t_uv.data(), num_verts * sizeof(float2), cudaMemcpyHostToDevice);
         cudaMemcpy(d_mesh_data.indices_matid, t_indices_matid.data(), num_tris * sizeof(int4), cudaMemcpyHostToDevice);
-        // [New] øΩ±¥º∏∫Œ∑®œﬂ
         cudaMemcpy(d_mesh_data.nor_geom, t_geom_normals.data(), num_tris * sizeof(float4), cudaMemcpyHostToDevice);
 
         // BVH
@@ -607,40 +586,27 @@ namespace pathtrace_megakernel
         cudaMalloc((void**)&d_bvh_data.child_nodes, (num_tris - 1) * sizeof(int2));
         cudaMalloc((void**)&d_bvh_data.escape_indices, num_nodes * sizeof(int));
 
-        unsigned long long* d_morton;
-        int* d_parent;
-        float4* d_centroid;
+        // Temp buffers for build
+        unsigned long long* d_morton; int* d_parent; float4* d_centroid;
         cudaMalloc((void**)&d_morton, num_tris * sizeof(unsigned long long));
         cudaMalloc((void**)&d_parent, num_nodes * sizeof(int));
         cudaMemset(d_parent, -1, num_nodes * sizeof(int));
         cudaMalloc((void**)&d_centroid, num_nodes * sizeof(float4));
-
-        d_bvh_data.morton_codes = d_morton;
-        d_bvh_data.parent = d_parent;
-        d_bvh_data.centroid = d_centroid;
+        d_bvh_data.morton_codes = d_morton; d_bvh_data.parent = d_parent; d_bvh_data.centroid = d_centroid;
 
         BuildLBVH(d_bvh_data, d_mesh_data);
 
-        cudaFree(d_morton);
-        cudaFree(d_parent);
-        cudaFree(d_centroid);
+        cudaFree(d_morton); cudaFree(d_parent); cudaFree(d_centroid);
     }
 
     void FreeSceneData() {
         cudaFree(d_materials);
-        cudaFree(d_light_data.tri_idx);
-        cudaFree(d_light_data.cdf);
-        cudaFree(d_mesh_data.pos);
-        cudaFree(d_mesh_data.nor);
-        cudaFree(d_mesh_data.tangent); // Free Tangent
-        cudaFree(d_mesh_data.uv);      // Free UV
-        cudaFree(d_mesh_data.indices_matid);
-        cudaFree(d_mesh_data.nor_geom); // [New] Free Geometric Normals
-        cudaFree(d_bvh_data.aabb_min);
-        cudaFree(d_bvh_data.aabb_max);
-        cudaFree(d_bvh_data.primitive_indices);
-        cudaFree(d_bvh_data.child_nodes);
-        cudaFree(d_bvh_data.escape_indices);
+        cudaFree(d_texture_objects);
+        cudaFree(d_light_data.tri_idx); cudaFree(d_light_data.cdf);
+        cudaFree(d_mesh_data.pos); cudaFree(d_mesh_data.nor); cudaFree(d_mesh_data.tangent);
+        cudaFree(d_mesh_data.uv); cudaFree(d_mesh_data.indices_matid); cudaFree(d_mesh_data.nor_geom);
+        cudaFree(d_bvh_data.aabb_min); cudaFree(d_bvh_data.aabb_max);
+        cudaFree(d_bvh_data.primitive_indices); cudaFree(d_bvh_data.child_nodes); cudaFree(d_bvh_data.escape_indices);
     }
 
     void PathtraceInit(Scene* scene)
@@ -648,7 +614,7 @@ namespace pathtrace_megakernel
         hst_scene = scene;
         InitImageSystem(scene->state.camera);
         InitSceneData(scene);
-        InitTextures(scene); // ≥ı ºªØŒ∆¿Ì
+        InitTextures(scene);
         printf("[MegaKernel] Init Complete.\n");
         checkCUDAError("PathtraceInit");
     }
@@ -657,7 +623,6 @@ namespace pathtrace_megakernel
     {
         FreeImageSystem();
         FreeSceneData();
-        FreeTextures(); //  Õ∑≈Œ∆¿Ì
         checkCUDAError("PathtraceFree");
     }
 
@@ -679,7 +644,6 @@ namespace pathtrace_megakernel
             cudaMemset(d_pixel_sample_count, 0, pixel_count * sizeof(int));
         }
 
-        // --- √ø“ª÷°÷ÿ÷√π‚œﬂº∆ ˝∆˜ ---
         cudaMemset(d_total_rays_executed, 0, sizeof(unsigned long long));
 
         cudaEvent_t start, stop;
@@ -699,7 +663,7 @@ namespace pathtrace_megakernel
             d_light_data,
             d_mesh_data,
             d_bvh_data,
-            d_texture_objects // ¥´»ÎŒ∆¿Ì∂‘œÛ
+            d_texture_objects
             );
 
         cudaEventRecord(stop);
@@ -707,12 +671,10 @@ namespace pathtrace_megakernel
         float milliseconds = 0;
         cudaEventElapsedTime(&milliseconds, start, stop);
 
-        // --- º∆À„π‚œﬂÕÃÕ¬¬  ---
         unsigned long long total_rays_host = 0;
         cudaMemcpy(&total_rays_host, d_total_rays_executed, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
 
         if (hst_gui_data != NULL) {
-            // M Rays/sec = (Total Rays / 10^6) / (Seconds)
             float seconds = milliseconds / 1000.0f;
             hst_gui_data->MraysPerSec = (float)total_rays_host / 1000000.0f / seconds;
         }

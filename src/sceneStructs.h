@@ -57,10 +57,11 @@ struct Material
     float emittance; // if it's a light soure
     float ior;
     MaterialType Type;
-	// 纹理贴图索引 (-1 表示无贴图)
-    int diffuse_tex_id = -1;
-    int normal_tex_id = -1;
-	int metallic_roughness_tex_id = -1;
+	// 纹理贴图索引 
+    int diffuse_tex_id=-1;
+    int normal_tex_id=-1;
+	int metallic_roughness_tex_id=-1;
+    int _pad;
 };
 
 struct EnvMapAliasTable {

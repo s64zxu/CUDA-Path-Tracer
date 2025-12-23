@@ -433,6 +433,9 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                     if (newMat.emittance > 0.0f) {
                         newMat.Type = DIFFUSE; // 或者单独的 EMISSIVE 类型
                     }
+                    else if (tMat.illum == 1) {
+                        newMat.Type = DIFFUSE;
+                    }
                     else if (tMat.illum == 6 || tMat.illum == 7 || (tMat.ior > 1.01f && tMat.dissolve < 1.0f)) {
                         newMat.Type = SPECULAR_REFRACTION;
                         glm::vec3 transmittance = glm::vec3(tMat.transmittance[0], tMat.transmittance[1], tMat.transmittance[2]);
@@ -446,6 +449,7 @@ void Scene::loadObjects(const json& objectsData, const std::unordered_map<std::s
                     else {
                         if ((newMat.metallic > 0.9f && newMat.roughness < 0.02f) || tMat.illum == 3) {
                             newMat.Type = SPECULAR_REFLECTION; // 完美镜面
+                            newMat.basecolor = glm::vec3(tMat.specular[0], tMat.specular[1], tMat.specular[2]); // 读取反射率
                             newMat.roughness = 0.0f;
                             newMat.metallic = 1.0f;
                         }

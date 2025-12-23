@@ -33,7 +33,7 @@ __host__ __device__ float DistributionGGX(glm::vec3 N, glm::vec3 H, float roughn
     float NdotH2 = NdotH * NdotH;
     float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
     denom = PI * denom * denom;
-    return a2 / max(denom, EPSILON);
+    return a2 / max(denom, 0.0000001f);
 }
 
 __host__ __device__ float GeometrySchlickGGX(float NdotV, float roughness) {
@@ -97,11 +97,11 @@ __host__ __device__ glm::vec3 evalPBR(const glm::vec3& wo, const glm::vec3& wi, 
     float NdotL = glm::dot(N, wi);
     float NdotV = glm::dot(N, wo);
 
-    if (NdotL <= 0.0f || NdotV <= 0.0f) return glm::vec3(0.0f); // 几何剔除
+    if (NdotL <= 0.0f) return glm::vec3(0.0f); // 几何剔除
 
     glm::vec3 H = glm::normalize(wo + wi);
     float VdotH = max(glm::dot(wo, H), 0.0f);
-    float roughness = glm::clamp(m.roughness, 0.05f, 1.0f);
+    float roughness = glm::clamp(m.roughness, 0.01f, 1.0f);
 
     // --- Specular Term (Cook-Torrance) ---
     glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.basecolor, m.metallic);
@@ -151,7 +151,7 @@ __host__ __device__ float pdfPBR(const glm::vec3& wo, const glm::vec3& wi, const
 
     glm::vec3 H = glm::normalize(wo + wi);
     float VdotH = max(glm::dot(wo, H), 0.0f);
-    float roughness = glm::clamp(m.roughness, 0.05f, 1.0f);
+    float roughness = glm::clamp(m.roughness, 0.01f, 1.0f);
 
     // 1. Diffuse PDF (Cosine Weighted)
     float pdfDiff = NdotL * INV_PI;
@@ -161,7 +161,7 @@ __host__ __device__ float pdfPBR(const glm::vec3& wo, const glm::vec3& wi, const
     // pdf_omega = pdf_h / (4 * (wo dot h))
     float D = DistributionGGX(N, H, roughness);
     float NdotH = max(glm::dot(N, H), 0.0f);
-    float pdfSpec = (D * NdotH) / (4.0f * VdotH + EPSILON);
+    float pdfSpec = (D * NdotH) / (4.0f * VdotH + 0.0000001f);
 
     // 3. 混合权重 (必须与 Sample 中的选择概率一致)
     float specProb = CalculateSpecularProbability(m, N, wo);
@@ -226,7 +226,7 @@ __host__ __device__ glm::vec3 samplePBR(
     glm::vec2 xi = glm::vec2(rand_float(seed), rand_float(seed));
     float r_select = rand_float(seed);
 
-    float roughness = glm::clamp(m.roughness, 0.05f, 1.0f);
+    float roughness = glm::clamp(m.roughness, 0.01f, 1.0f);
     float specProb = CalculateSpecularProbability(m, N, wo);
 
     // 决策：采样高光还是漫反射
@@ -277,7 +277,7 @@ __host__ __device__ glm::vec3 sampleSpecularReflection(
     float NdotWi = max(glm::dot(N, wi), 0.0f);
 
     // 计算 BRDF/PDF 比值 (Fr / NdotWi)
-    pdf = pdfSpecularReflection(wo, wi, N);
+    pdf = PDF_DIRAC_DELTA;
 
     // 计算 Fresnel 项 Fr
     glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.basecolor, m.metallic);
@@ -316,13 +316,13 @@ __host__ __device__ glm::vec3 sampleSpecularRefraction(
     if (sinThetaT2 >= 1.0f || rnd < Fr) {
         // --- 采样反射路径 ---
         wi = glm::reflect(-wo, n_eff);
-        pdf = 1.0f; // Delta 分布在采样中通常设为 1 或特殊标记
+        pdf = PDF_DIRAC_DELTA;
         return glm::vec3(1.0f); 
     }
     else {
         // --- 采样折射路径 ---
         wi = glm::refract(-wo, n_eff, eta);
-        pdf = 1.0f;
+        pdf = PDF_DIRAC_DELTA;
         float factor = (n2 * n2) / (n1 * n1);
         return m.basecolor * factor;
     }
