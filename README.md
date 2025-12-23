@@ -1,9 +1,7 @@
-Gallery
+# Gallery
 
-![Sponza](D:\Projects\CIS5650 Project\CUDA-Path-Tracer\img\Sponza.png)
+![Sponza](img\Sponza.png)
 
-![bunny_reflection](D:\Projects\CIS5650 Project\CUDA-Path-Tracer\img\bunny_reflection.png)
-
-![bunny_refraction](D:\Projects\CIS5650 Project\CUDA-Path-Tracer\img\bunny_refraction.png)
-
-![bunny_pbr](D:\Projects\CIS5650 Project\CUDA-Path-Tracer\img\bunny_pbr.png)
+| <img src="img\bunny_reflection.png" alt="bunny_reflection" style="zoom:40%;" /> | <img src="img\bunny_refraction.png" alt="bunny_refraction" style="zoom:40%;" /> | <img src="img\bunny_pbr.png" alt="bunny_pbr" style="zoom:40%;" /> |
+| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| **Specular Reflection**                                      | **Specular Refraction**                                      | **Microfacet PBR**                                           |
