@@ -3,40 +3,18 @@
 #include <glm/glm.hpp>
 #include <glm/gtx/intersect.hpp>
 
-#include "sceneStructs.h"
+#include "scene_structs.h"
 #include "utilities.h"
 
-/**
- * Handy-dandy hash function that provides seeds for random number generation.
- */
-__host__ __device__ inline unsigned int utilhash(unsigned int a)
-{
-    a = (a + 0x7ed55d16) + (a << 12);
-    a = (a ^ 0xc761c23c) ^ (a >> 19);
-    a = (a + 0x165667b1) + (a << 5);
-    a = (a + 0xd3a2646c) ^ (a << 9);
-    a = (a + 0xfd7046c5) + (a << 3);
-    a = (a ^ 0xb55a4f09) ^ (a >> 16);
-    return a;
-}
+struct HitInfo {
+    float t;
+    int geom_id;
+    float u;
+    float v;
+};
 
-// CHECKITOUT
-/**
- * Compute a point at parameter value `t` on ray `r`.
- * Falls slightly short so that it doesn't intersect the object it's hitting.
- */
-__host__ __device__ inline glm::vec3 getPointOnRay(Ray r, float t)
-{
-    return r.origin + (t - .0001f) * glm::normalize(r.direction);
-}
 
-/**
- * Multiplies a mat4 and a vec4 and returns a vec3 clipped from the vec4.
- */
-__host__ __device__ inline glm::vec3 multiplyMV(glm::mat4 m, glm::vec4 v)
-{
-    return glm::vec3(m * v);
-}
+
 __host__ __device__ float TriangleIntersectionTest(
     const glm::vec3& v0,
     const glm::vec3& v1,
@@ -49,4 +27,17 @@ __device__ float BoudingboxIntersetionTest(
     const glm::vec3& p_max,
     const Ray& r,
     const glm::vec3& inv_dir
+);
+
+__device__ HitInfo BVHIntersection(
+    Ray ray,
+    const MeshData mesh_data,
+    const LBVHData bvh_data
+);
+
+__device__ bool BVHOcclusion(
+    Ray ray,
+    float t_max,
+    const MeshData mesh_data,
+    const LBVHData bvh_data
 );

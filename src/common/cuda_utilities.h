@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include "glm/glm.hpp"
+#include "scene_structs.h"
+#include "utilities.h"
 
 
 void checkCUDAErrorFn(const char* msg, const char* file, int line);
@@ -170,4 +172,104 @@ __host__ __device__ __forceinline__ int BinarySearch(const float* cdf, int count
     }
     // 边界保护
     return min(left, count - 1);
+}
+
+__device__ __forceinline__ int DispatchPathIndex(int* d_counter) {
+    unsigned int mask = __activemask();
+    int lane_id = threadIdx.x & 0x1f;
+    int leader_lane = __ffs(mask) - 1;
+    int base_offset = 0;
+
+    if (lane_id == leader_lane) {
+        int total_count = __popc(mask);
+        base_offset = atomicAdd(d_counter, total_count);
+    }
+
+    base_offset = __shfl_sync(mask, base_offset, leader_lane);
+    unsigned int lower_mask = mask & ((1U << lane_id) - 1);
+
+    return base_offset + __popc(lower_mask);
+}
+
+__device__ __forceinline__ void UpdatePathState(
+    PathState d_path_state, int idx,
+    int* d_extension_queue, int* d_extension_counter,
+    int trace_depth, unsigned int seed,
+    glm::vec3 throughput, glm::vec3 attenuation,
+    glm::vec3 intersect_point, glm::vec3 Ng,
+    glm::vec3 next_dir, float next_pdf)
+{
+    if (next_pdf > 0.0f && glm::length(attenuation) > 0.0f) {
+        throughput *= attenuation;
+
+        bool is_reflect = glm::dot(next_dir, Ng) > 0.0f;
+        glm::vec3 bias_n = is_reflect ? Ng : -Ng;
+
+        d_path_state.throughput_pdf[idx] = make_float4(throughput.x, throughput.y, throughput.z, next_pdf);
+
+        d_path_state.ray_ori[idx] = make_float4(
+            intersect_point.x + bias_n.x * EPSILON,
+            intersect_point.y + bias_n.y * EPSILON,
+            intersect_point.z + bias_n.z * EPSILON,
+            0.0f);
+
+        d_path_state.ray_dir_dist[idx] = make_float4(next_dir.x, next_dir.y, next_dir.z, FLT_MAX);
+        d_path_state.remaining_bounces[idx]--;
+
+        int ext_idx = DispatchPathIndex(d_extension_counter);
+        d_extension_queue[ext_idx] = idx;
+    }
+    else {
+        d_path_state.remaining_bounces[idx] = -1;
+    }
+    d_path_state.rng_state[idx] = seed;
+}
+
+__device__ __forceinline__ void GetSurfaceProperties(
+    const MeshData& mesh_data,
+    const cudaTextureObject_t* textures, // <--- 新增：传入当前文件的常量纹理数组
+    int prim_id,
+    float u,
+    float v,
+    const Material& mat,
+    glm::vec3& out_N,
+    glm::vec2& out_uv)
+{
+    int4 idx_mat = __ldg(&mesh_data.indices_matid[prim_id]);
+    float w = 1.0f - u - v;
+
+    // UV Interpolation
+    float2 uv0 = __ldg(&mesh_data.uv[idx_mat.x]);
+    float2 uv1 = __ldg(&mesh_data.uv[idx_mat.y]);
+    float2 uv2 = __ldg(&mesh_data.uv[idx_mat.z]);
+    out_uv = glm::vec2(w * uv0.x + u * uv1.x + v * uv2.x, w * uv0.y + u * uv1.y + v * uv2.y);
+
+    // Normal Interpolation
+    glm::vec3 n0 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.x]));
+    glm::vec3 n1 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.y]));
+    glm::vec3 n2 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.z]));
+    glm::vec3 N_geom = glm::normalize(w * n0 + u * n1 + v * n2);
+
+    // Normal Map Handling
+    if (mat.normal_tex_id < 0) {
+        out_N = N_geom;
+    }
+    else {
+        glm::vec3 tan1 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.x]));
+        glm::vec3 tan2 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.y]));
+        glm::vec3 tan3 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.z]));
+        glm::vec3 T_interp = w * tan1 + u * tan2 + v * tan3;
+        glm::vec3 B = glm::normalize(glm::cross(N_geom, T_interp));
+        glm::vec3 T = glm::cross(B, N_geom);
+
+        // 使用传入的 textures 指针
+        float4 normal_sample = tex2D<float4>(textures[mat.normal_tex_id], out_uv.x, out_uv.y);
+
+        glm::vec3 mapped_normal = glm::vec3(
+            normal_sample.x * 2.0f - 1.0f,
+            normal_sample.y * 2.0f - 1.0f,
+            normal_sample.z * 2.0f - 1.0f
+        );
+        out_N = glm::normalize(glm::mat3(T, B, N_geom) * mapped_normal);
+    }
 }

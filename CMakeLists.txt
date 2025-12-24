@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(cis565_path_tracer LANGUAGES CUDA CXX)
+project(cuda_path_tracer LANGUAGES CUDA CXX)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -59,19 +59,23 @@ set(headers
     src/pathtrace.h
     src/pathtrace_wavefront.h
     src/scene.h
-    src/sceneStructs.h
+    src/scene_structs.h
     src/preview.h
-    src/utilities.h
-    src/cuda_utilities.h
+    src/common/utilities.h
+    src/common/cuda_utilities.h
     src/rng.h
     src/tiny_obj_loader.h
     src/bvh.h
     src/stb_image.h
+    src/wavefront_internal.h
+    src/kernels/shading.h
+    src/kernels/ray_cast.h
+    src/kernels/logic.h
+    src/kernels/ray_gen.h
 )
 
 set(sources
     src/main.cpp
-    src/stb.cpp
     src/image.cpp
     src/glslUtility.cpp
     src/pathtrace.cu
@@ -80,11 +84,16 @@ set(sources
     src/interactions.cu
     src/scene.cpp
     src/preview.cpp
-    src/utilities.cpp
-    src/cuda_utilities.cu
+    src/common/utilities.cpp
+    src/common/cuda_utilities.cu
     src/bvh.cu
     src/tiny_obj_loader.cpp
     src/stb_image.cpp
+    src/wavefront_internal.cu
+    src/kernels/ray_cast.cu
+    src/kernels/shading.cu
+    src/kernels/logic.cu
+    src/kernels/ray_gen.cu
 )
 
 set(imgui_headers
@@ -136,6 +145,11 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
     cudadevrt
     #stream_compaction  # TODO: uncomment if using your stream compaction
     )
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src           # 允许 #include "pathtrace.h"
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/common    # 允许 #include "cuda_utilities.h"
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels   # 允许 #include "logic.h"
+)
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Debug,RelWithDebInfo>,$<COMPILE_LANGUAGE:CUDA>>:-G;-src-in-ptx>")
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:-lineinfo;-src-in-ptx>")
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})

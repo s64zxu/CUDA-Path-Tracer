@@ -10,7 +10,7 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
-#include "sceneStructs.h"
+#include "scene_structs.h"
 #include "scene.h"
 #include "glm/glm.hpp"
 #include "glm/gtx/norm.hpp"

@@ -8,7 +8,7 @@
 #include <string>
 #include "glm/glm.hpp"
 #include "utilities.h"
-#include "sceneStructs.h"
+#include "scene_structs.h"
 #include "json.hpp"
 #include <cuda_runtime.h>
 

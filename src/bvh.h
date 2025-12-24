@@ -2,7 +2,7 @@
 #pragma once
 
 //#include <glm/glm.hpp> 
-#include "sceneStructs.h"
+#include "scene_structs.h"
 
 __device__ __forceinline__ int DecodeNode(int idx)
 {

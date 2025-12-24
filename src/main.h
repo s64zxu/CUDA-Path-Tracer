@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string>
 
-#include "sceneStructs.h"
+#include "scene_structs.h"
 #include "image.h"
 #include "pathtrace_wavefront.h"
 #include "pathtrace.h"
