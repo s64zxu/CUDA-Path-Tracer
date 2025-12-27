@@ -54,11 +54,11 @@ For the Wavefront Ray Cast kernel, SM Busy is only 27.60% with an IPC of 1.10. I
 
 Compute Workload of Ray Cast Kernel:
 
-![image-20251226082405469](img/Compute Workload of Ray Cast Kernel.png)
+<img src="img/Compute Workload of Ray Cast Kernel.png" alt="image-20251226083830643" style="zoom: 80%;" />
 
 Memory Workload of Ray Cast Kernel:
 
-![image-20251226082443003](img/Memory Workload of Ray Cast Kernel.png)
+<img src="img/Memory Workload of Ray Cast Kernel.png" alt="image-20251226083830643" style="zoom: 80%;" />
 
 The intersection kernel writes a staggering 6.87 GB from L2 to Device Memory (Reading only 1.93 GB). This 6.87 GB of traffic is solely for maintaining global ray state—an overhead completely absent in the Megakernel, which passes state efficiently via registers.
 
@@ -74,7 +74,7 @@ Megakernel Occupancy: **30.29%** (Stifled by register pressure).
 
 Wavefront Occupancy: **~74.38%** (Theoretical Occupancy: 100% in Logic/RayGen, ~50% in Intersection/Shading).
 
-![image-20251226181825433](img/occupany of megakernel.png)
+<img src="img/occupany of megakernel.png" alt="occupany of megakernel" style="zoom:60%;" />
 
 #### 3. Threads Divergency
 
