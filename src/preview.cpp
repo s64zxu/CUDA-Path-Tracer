@@ -1,12 +1,12 @@
 #define _CRT_SECURE_NO_DEPRECATE
 #include <ctime>
-#include "main.h" // 【关键】必须包含这个以获取 ENABLE_VISUALIZATION 宏
+#include "main.h" 
 #include "preview.h"
 #include "ImGui/imgui.h"
 #include "ImGui/imgui_impl_glfw.h"
 #include "ImGui/imgui_impl_opengl3.h"
 
-#define ENABLE_VISUALIZATION 1
+// REMOVED: #define ENABLE_VISUALIZATION 1
 
 GLuint positionLocation = 0;
 GLuint texcoordsLocation = 1;
@@ -33,18 +33,19 @@ std::string currentTimeString()
 
 void initTextures()
 {
-#if ENABLE_VISUALIZATION
+    if (!g_enableVisualization) return;
+
     glGenTextures(1, &displayImage);
     glBindTexture(GL_TEXTURE_2D, displayImage);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
-#endif
 }
 
 void initVAO(void)
 {
-#if ENABLE_VISUALIZATION
+    if (!g_enableVisualization) return;
+
     GLfloat vertices[] = {
         -1.0f, -1.0f,
         1.0f, -1.0f,
@@ -76,32 +77,27 @@ void initVAO(void)
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vertexBufferObjID[2]);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-#endif
 }
 
 GLuint initShader()
 {
-#if ENABLE_VISUALIZATION
+    if (!g_enableVisualization) return 0;
+
     const char* attribLocations[] = { "Position", "Texcoords" };
     GLuint program = glslUtility::createDefaultProgram(attribLocations, 2);
     GLint location;
 
-    //glUseProgram(program);
     if ((location = glGetUniformLocation(program, "u_image")) != -1)
     {
         glUniform1i(location, 0);
     }
 
     return program;
-#else
-    return 0;
-#endif
 }
 
 void deletePBO(GLuint* pbo)
 {
-#if ENABLE_VISUALIZATION
-    if (pbo)
+    if (pbo && g_enableVisualization)
     {
         // unregister this buffer object with CUDA
         cudaGLUnregisterBufferObject(*pbo);
@@ -111,59 +107,45 @@ void deletePBO(GLuint* pbo)
 
         *pbo = (GLuint)NULL;
     }
-#endif
 }
 
 void deleteTexture(GLuint* tex)
 {
-#if ENABLE_VISUALIZATION
-    glDeleteTextures(1, tex);
-    *tex = (GLuint)NULL;
-#endif
+    if (g_enableVisualization) {
+        glDeleteTextures(1, tex);
+        *tex = (GLuint)NULL;
+    }
 }
 
 void cleanupCuda()
 {
-#if ENABLE_VISUALIZATION
-    if (pbo)
-    {
-        deletePBO(&pbo);
+    if (g_enableVisualization) {
+        if (pbo) deletePBO(&pbo);
+        if (displayImage) deleteTexture(&displayImage);
     }
-    if (displayImage)
-    {
-        deleteTexture(&displayImage);
-    }
-#endif
 }
 
 void initCuda()
 {
-#if ENABLE_VISUALIZATION
-    // Headless 模式绝对不能调用 cudaGLSetGLDevice，否则 Nsight 会卡死
-    cudaGLSetGLDevice(0);
-    // Clean up on program exit
-    atexit(cleanupCuda);
-#endif
+    if (g_enableVisualization) {
+        // Headless mode must NOT call cudaGLSetGLDevice, or Nsight freezes
+        cudaGLSetGLDevice(0);
+        atexit(cleanupCuda);
+    }
 }
 
 void initPBO()
 {
-#if ENABLE_VISUALIZATION
-    // set up vertex data parameter
+    if (!g_enableVisualization) return;
+
     int num_texels = width * height;
     int num_values = num_texels * 4;
     int size_tex_data = sizeof(GLubyte) * num_values;
 
-    // Generate a buffer ID called a PBO (Pixel Buffer Object)
     glGenBuffers(1, &pbo);
-
-    // Make this the current UNPACK buffer (OpenGL is state-based)
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-
-    // Allocate data for the buffer. 4-channel 8-bit image
     glBufferData(GL_PIXEL_UNPACK_BUFFER, size_tex_data, NULL, GL_DYNAMIC_COPY);
     cudaGLRegisterBufferObject(pbo);
-#endif
 }
 
 void errorCallback(int error, const char* description)
@@ -173,7 +155,8 @@ void errorCallback(int error, const char* description)
 
 bool init()
 {
-#if ENABLE_VISUALIZATION
+    if (!g_enableVisualization) return true;
+
     glfwSetErrorCallback(errorCallback);
 
     if (!glfwInit())
@@ -199,8 +182,8 @@ bool init()
         return false;
     }
     printf("Opengl Version:%s\n", glGetString(GL_VERSION));
-    //Set up ImGui
 
+    //Set up ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     io = &ImGui::GetIO(); (void)io;
@@ -219,41 +202,29 @@ bool init()
     glActiveTexture(GL_TEXTURE0);
 
     return true;
-#else
-    // Headless 模式下直接返回成功，不执行任何 GL 初始化
-    return true;
-#endif
 }
 
 void InitImguiData(GuiDataContainer* guiData)
 {
-#if ENABLE_VISUALIZATION
+    if (!g_enableVisualization) return;
+
     imguiData = guiData;
-    // initialize displayed traced depth from loaded scene if available
     if (imguiData != nullptr && scene != nullptr) {
         imguiData->TracedDepth = scene->state.traceDepth;
     }
-#endif
 }
 
-
-// LOOK: Un-Comment to check ImGui Usage
 void RenderImGui()
 {
-#if ENABLE_VISUALIZATION
+    if (!g_enableVisualization) return;
+
     mouseOverImGuiWinow = io->WantCaptureMouse;
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    bool show_demo_window = true;
-    bool show_another_window = false;
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-    static float f = 0.0f;
-    static int counter = 0;
-
-    ImGui::Begin("Path Tracer Analytics");                  // Create a window called "Hello, world!" and append into it.
+    ImGui::Begin("Path Tracer Analytics");
 
     if (scene != nullptr) {
         ImGui::Text("Traced Depth %d", scene->state.traceDepth);
@@ -274,46 +245,37 @@ void RenderImGui()
     ImGui::Text("%.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
     ImGui::End();
 
-
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-#endif
 }
 
 bool MouseOverImGuiWindow()
 {
-#if ENABLE_VISUALIZATION
+    if (!g_enableVisualization) return false;
     return mouseOverImGuiWinow;
-#else
-    return false;
-#endif
 }
 
 void mainLoop()
 {
-#if ENABLE_VISUALIZATION
+    if (!g_enableVisualization) return;
+
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
 
         runCuda();
 
-        string title = "CIS565 Path Tracer | " + utilityCore::convertIntToString(iteration) + " Iterations";
+        string title = "Cuda Path Tracer | " + utilityCore::convertIntToString(iteration) + " Iterations";
         glfwSetWindowTitle(window, title.c_str());
 
-        // Transfer the data from PBO to Opengel texture
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
         glBindTexture(GL_TEXTURE_2D, displayImage);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         glClear(GL_COLOR_BUFFER_BIT);
-
-        // Binding GL_PIXEL_UNPACK_BUFFER back to default
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
-        // VAO, shader program, and texture already bound
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
 
-        // Render ImGui Stuff
         RenderImGui();
 
         glfwSwapBuffers(window);
@@ -325,5 +287,4 @@ void mainLoop()
 
     glfwDestroyWindow(window);
     glfwTerminate();
-#endif
 }

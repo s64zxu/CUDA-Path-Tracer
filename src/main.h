@@ -26,7 +26,7 @@ using namespace std;
 //-------------------------------
 //----------PATH TRACER----------
 //-------------------------------
-
+extern bool g_enableVisualization;
 extern Scene* scene;
 extern int iteration;
 

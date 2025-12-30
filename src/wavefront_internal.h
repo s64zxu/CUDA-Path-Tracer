@@ -26,10 +26,6 @@ public:
     bool isInitialized() const { return m_initialized; }
 
 public:
-    // === 公开数据成员 (供 Kernel 直接访问) ===
-    // 在 CUDA 编程中，将 Device 指针设为 public 可以避免繁琐的 getter，
-    // 因为这些指针本身只是句柄，不涉及深层封装破坏。
-
     // Image & Counters
     glm::vec3* d_image = nullptr;
     int* d_pixel_sample_count = nullptr;

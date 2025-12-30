@@ -42,7 +42,7 @@ namespace pathtrace_wavefront {
 
         glm::vec3 wi = glm::normalize(light_sample_pos - intersect_point);
         float dist = glm::distance(light_sample_pos, intersect_point);
-
+        float distSQ = glm::max(0.000001f, dist*dist);
         float cosThetaSurf = max(glm::dot(N, wi), 0.0f);
         float cosThetaLight = max(glm::dot(light_N, -wi), 0.0f);
 
@@ -56,9 +56,9 @@ namespace pathtrace_wavefront {
             float pdf = pdfBSDF(wo, wi, N, material);
 
             if (glm::length(f) > 0.0f) {
-                float pdfLightSolidAngle = pdf_light_area * (dist * dist) / cosThetaLight;
+                float pdfLightSolidAngle = pdf_light_area * distSQ / cosThetaLight;
                 float weight = PowerHeuristic(pdfLightSolidAngle, pdf);
-                glm::vec3 L_potential = throughput * Le * f * (cosThetaSurf * cosThetaLight) / (dist * dist) * weight / pdf_light_area;
+                glm::vec3 L_potential = throughput * Le * f * (cosThetaSurf * cosThetaLight) / distSQ * weight / pdf_light_area;
 
                 if (glm::length(L_potential) > 0.0f) {
                     int shadow_idx = DispatchPathIndex(d_shadow_queue_counter);

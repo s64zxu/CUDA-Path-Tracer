@@ -24,6 +24,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 find_package(OpenGL REQUIRED)
+find_package(OptiX REQUIRED)
 
 if(UNIX)
     include_directories("${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
@@ -64,14 +65,14 @@ set(headers
     src/common/utilities.h
     src/common/cuda_utilities.h
     src/rng.h
-    src/tiny_obj_loader.h
     src/bvh.h
-    src/stb_image.h
     src/wavefront_internal.h
     src/kernels/shading.h
     src/kernels/ray_cast.h
     src/kernels/logic.h
     src/kernels/ray_gen.h
+    src/optix/optix_structs.h
+    src/optix/optix_ray_cast.h
 )
 
 set(sources
@@ -94,6 +95,8 @@ set(sources
     src/kernels/shading.cu
     src/kernels/logic.cu
     src/kernels/ray_gen.cu
+    src/optix/optix_ray_cast.cu
+    src/optix/optix_kernels.cu
 )
 
 set(imgui_headers
@@ -132,6 +135,46 @@ source_group("ImGui\\Sources" FILES ${imgui_sources})
 #add_subdirectory(stream_compaction)  # TODO: uncomment if using your stream compaction
 
 add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers} ${imgui_sources} ${imgui_headers})
+
+
+# OptiX PTX Generation
+set(OPTIX_KERNEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/optix/optix_kernels.cu")
+set(OPTIX_PTX_FILE "${CMAKE_BINARY_DIR}/optix_kernels.ptx")
+
+if (NOT DEFINED OptiX_INCLUDE_DIR)
+    message(WARNING "OptiX_INCLUDE_DIR not defined. Assuming standard environment or target usage.")
+endif()
+
+add_custom_command(
+    OUTPUT "${OPTIX_PTX_FILE}"
+    COMMAND ${CMAKE_CUDA_COMPILER}
+    -ptx
+    -I "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    -I "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
+    -I "${CMAKE_CURRENT_SOURCE_DIR}/external/include"
+    -I "${OptiX_INCLUDE_DIR}"
+    --use_fast_math
+    -arch=compute_60
+    -code=sm_60
+    -o "${OPTIX_PTX_FILE}"
+    "${OPTIX_KERNEL_FILE}"
+    MAIN_DEPENDENCY "${OPTIX_KERNEL_FILE}"
+    COMMENT "Compiling OptiX kernel to PTX: ${OPTIX_KERNEL_FILE}"
+)
+
+add_custom_target(generate_optix_ptx DEPENDS "${OPTIX_PTX_FILE}")
+add_dependencies(${CMAKE_PROJECT_NAME} generate_optix_ptx)
+
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE 
+    "OPTIX_PTX_FILENAME=\"${OPTIX_PTX_FILE}\""
+)
+
+set_source_files_properties(
+    "src/optix/optix_kernels.cu"
+    PROPERTIES
+    HEADER_FILE_ONLY ON
+)
+
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 if(CMAKE_VERSION VERSION_LESS "3.23.0")
     set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_ARCHITECTURES OFF)
@@ -140,16 +183,22 @@ elseif(CMAKE_VERSION VERSION_LESS "3.24.0")
 else()
     set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_ARCHITECTURES native)
 endif()
+
 target_link_libraries(${CMAKE_PROJECT_NAME}
     ${LIBRARIES}
     cudadevrt
     #stream_compaction  # TODO: uncomment if using your stream compaction
-    )
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src           # 允许 #include "pathtrace.h"
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/common    # 允许 #include "cuda_utilities.h"
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels   # 允许 #include "logic.h"
+    OptiX::OptiX
 )
+
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src  
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/common   
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels  
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/include
+)
+
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Debug,RelWithDebInfo>,$<COMPILE_LANGUAGE:CUDA>>:-G;-src-in-ptx>")
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:-lineinfo;-src-in-ptx>")
+
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})

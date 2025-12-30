@@ -1,10 +1,74 @@
 #include "main.h"
 #include "preview.h"
 #include <cstring>
-#include "json.hpp" // 确保包含 json 库
+#include "json.hpp" 
 using json = nlohmann::json;
 
-#define ENABLE_VISUALIZATION 1
+enum RenderMode {
+    RENDER_WAVEFRONT,
+    RENDER_MEGAKERNEL
+};
+
+// 默认使用 Wavefront 模式
+RenderMode g_renderMode = RENDER_WAVEFRONT;
+
+// 全局可视化控制
+bool g_enableVisualization = false;
+
+namespace pathtrace_wavefront {
+    void PathtraceInit(Scene* scene);
+    void Pathtrace(uchar4* pbo, int frame, int iter);
+    void PathtraceFree();
+    void InitDataContainer(GuiDataContainer* guiData); // 【关键】声明 UI 数据绑定函数
+}
+
+namespace pathtrace_megakernel {
+    void PathtraceInit(Scene* scene);
+    void Pathtrace(uchar4* pbo, int frame, int iter);
+    void PathtraceFree();
+    void InitDataContainer(GuiDataContainer* guiData); // 【关键】声明 UI 数据绑定函数
+}
+
+// 包装初始化
+void InitPathTracer(Scene* scene) {
+    if (g_renderMode == RENDER_WAVEFRONT) {
+        pathtrace_wavefront::PathtraceInit(scene);
+    }
+    else {
+        pathtrace_megakernel::PathtraceInit(scene);
+    }
+}
+
+// 包装核心渲染循环
+void RunPathTracer(uchar4* pbo, int frame, int iter) {
+    if (g_renderMode == RENDER_WAVEFRONT) {
+        pathtrace_wavefront::Pathtrace(pbo, frame, iter);
+    }
+    else {
+        pathtrace_megakernel::Pathtrace(pbo, frame, iter);
+    }
+}
+
+// 包装资源释放
+void FreePathTracer() {
+    if (g_renderMode == RENDER_WAVEFRONT) {
+        pathtrace_wavefront::PathtraceFree();
+    }
+    else {
+        pathtrace_megakernel::PathtraceFree();
+    }
+}
+
+// 【关键修正】包装 GUI 数据容器初始化
+void InitRendererDataContainer(GuiDataContainer* guiData) {
+    if (g_renderMode == RENDER_WAVEFRONT) {
+        pathtrace_wavefront::InitDataContainer(guiData);
+    }
+    else {
+        pathtrace_megakernel::InitDataContainer(guiData);
+    }
+}
+
 
 static std::string startTimeString;
 
@@ -19,11 +83,11 @@ static bool camchanged = true;
 glm::vec3 cameraPosition;
 
 // FPS Camera specific variables
-static float yaw = -90.0f;   // 偏航角
-static float pitch = 0.0f;   // 俯仰角
+static float yaw = -90.0f;
+static float pitch = 0.0f;
 static bool firstMouse = true;
-static float moveSpeed = 10.0f; // 移动速度
-static float mouseSensitivity = 0.1f; // 鼠标灵敏度
+static float moveSpeed = 10.0f;
+static float mouseSensitivity = 0.1f;
 
 Scene* scene;
 GuiDataContainer* guiData;
@@ -33,19 +97,11 @@ int iteration;
 int width;
 int height;
 
-// Global window pointer (needed for input polling)
 extern GLFWwindow* window;
-
-//-------------------------------
-//-------------MAIN--------------
-//-------------------------------
-
-using namespace pathtrace_wavefront;
-//using namespace pathtrace_megakernel;
-
 
 void processInput(GLFWwindow* window);
 void saveImage();
+void runCuda();
 
 int main(int argc, char** argv)
 {
@@ -53,22 +109,45 @@ int main(int argc, char** argv)
 
     if (argc < 2)
     {
-        printf("Usage: %s SCENEFILE.json\n", argv[0]);
+        printf("Usage: %s SCENEFILE.json [-vis] [-mega]\n", argv[0]);
         return 1;
     }
 
     const char* sceneFile = argv[1];
+
+    for (int i = 1; i < argc; i++) {
+        // 可视化开关
+        if (strcmp(argv[i], "-vis") == 0 || strcmp(argv[i], "--visualization") == 0) {
+            g_enableVisualization = true;
+        }
+        // 渲染器模式开关
+        else if (strcmp(argv[i], "-mega") == 0 || strcmp(argv[i], "--megakernel") == 0) {
+            g_renderMode = RENDER_MEGAKERNEL;
+        }
+        else if (strcmp(argv[i], "-wave") == 0 || strcmp(argv[i], "--wavefront") == 0) {
+            g_renderMode = RENDER_WAVEFRONT;
+        }
+    }
+
+    // 打印当前模式
+    if (g_enableVisualization) printf("Visualization Mode ENABLED\n");
+    if (g_renderMode == RENDER_WAVEFRONT) {
+        printf("Render Mode: WAVEFRONT (Default)\n");
+    }
+    else {
+        printf("Render Mode: MEGAKERNEL\n");
+    }
+
+    // Load Scene JSON to get resolution
     {
         std::ifstream f(sceneFile);
         if (f.is_open()) {
             json data = json::parse(f);
-            // 假设 JSON 结构是 data["Camera"]["RES"] = [width, height]
             if (data.contains("Camera") && data["Camera"].contains("RES")) {
                 width = data["Camera"]["RES"][0];
                 height = data["Camera"]["RES"][1];
             }
             else {
-                // 默认兜底值，防止崩坏
                 width = 800;
                 height = 800;
                 printf("Warning: Could not parse resolution from JSON, using default 800x800\n");
@@ -78,77 +157,81 @@ int main(int argc, char** argv)
             printf("Error: Could not open scene file for peeking.\n");
             return 1;
         }
-    } 
+    }
 
-#if ENABLE_VISUALIZATION
+    // Initialize logic based on runtime flag
+    if (g_enableVisualization) {
+        init(); // Initialize OpenGL/GLFW
+    }
+    else {
+        // Headless init
+        cudaSetDevice(0);
+        cudaSetDeviceFlags(cudaDeviceScheduleSpin | cudaDeviceMapHost);
+        cudaFree(0);
+    }
 
-    init();
-#else
-    cudaSetDevice(0);
-    cudaSetDeviceFlags(cudaDeviceScheduleSpin | cudaDeviceMapHost);
-    cudaFree(0); // 强制初始化上下文
-#endif
     scene = new Scene(sceneFile);
 
-    // 更新全局指针
+    // Update global pointers
     renderState = &scene->state;
     Camera& cam = renderState->camera;
     width = cam.resolution.x;
     height = cam.resolution.y;
 
-#if ENABLE_VISUALIZATION
-    // ============================
-    // 正常模式 (带窗口)
-    // ============================
-    guiData = new GuiDataContainer();
+    if (g_enableVisualization) {
+        // ============================
+        // VISUALIZATION MODE
+        // ============================
+        guiData = new GuiDataContainer();
 
-    // 1. 同步 GUI 所需的摄像机参数
-    cameraPosition = cam.position;
+        // 1. Sync Camera
+        cameraPosition = cam.position;
+        glm::vec3 v = glm::normalize(cam.view);
+        pitch = glm::degrees(asin(v.y));
+        yaw = glm::degrees(atan2(v.z, v.x));
 
-    // 2. 根据场景定义的初始 view 向量反推 yaw 和 pitch
-    glm::vec3 v = glm::normalize(cam.view);
-    pitch = glm::degrees(asin(v.y));
-    yaw = glm::degrees(atan2(v.z, v.x));
+        camchanged = false;
+        iteration = 0;
 
-    camchanged = false;
-    iteration = 0;
+        // Init UI 
+        InitImguiData(guiData); // 这是 preview.cpp 里的函数，不用改
 
-    // 初始化 UI 
-    InitImguiData(guiData);
-    InitDataContainer(guiData);
+        InitRendererDataContainer(guiData);
 
-    // 进入 GLFW 主循环
-    mainLoop();
-
-#else
-    // ============================
-    // HEADLESS 模式 (无窗口)
-    // ============================
-    printf("Running in HEADLESS mode (No OpenGL, No GUI).\n");
-
-    PathtraceInit(scene);
-
-    int total_iterations = 120;
-
-    for (int i = 1; i <= total_iterations; ++i) {
-        iteration = i;
-        // 传入 NULL 作为 PBO 缓冲区
-        Pathtrace(NULL, 0, i);
-
-        if (i % 10 == 0 || i == total_iterations) {
-            printf("Iteration: %d / %d\n", i, total_iterations);
-        }
+        // Enter Main Loop (GLFW)
+        mainLoop();
     }
+    else {
+        // ============================
+        // HEADLESS MODE
+        // ============================
+        printf("Running in HEADLESS mode (No OpenGL, No GUI).\n");
 
-    saveImage();
+        // 使用 Wrapper 函数初始化
+        InitPathTracer(scene);
 
-    PathtraceFree();
+        int total_iterations = 120; // Or read from scene file
 
-    // 清理资源
-    delete scene;
-    cudaDeviceReset();
-    printf("Done. Image saved to disk.\n");
-#endif
+        for (int i = 1; i <= total_iterations; ++i) {
+            iteration = i;
+
+            // 使用 Wrapper 函数渲染
+            RunPathTracer(NULL, 0, i);
+
+            if (i % 10 == 0 || i == total_iterations) {
+                printf("Iteration: %d / %d\n", i, total_iterations);
+            }
+        }
+
+        saveImage();
+
+        // 使用 Wrapper 函数清理
+        FreePathTracer();
+
+        delete scene;
+        cudaDeviceReset();
+        printf("Done. Image saved to disk.\n");
+    }
 
     return 0;
 }
@@ -156,7 +239,6 @@ int main(int argc, char** argv)
 void saveImage()
 {
     float samples = iteration;
-    // output image file
     Image img(width, height);
 
     for (int x = 0; x < width; x++)
@@ -174,12 +256,9 @@ void saveImage()
     ss << filename << "." << startTimeString << "." << samples << "samp";
     filename = ss.str();
 
-    // CHECKITOUT
     img.savePNG(filename);
-    //img.saveHDR(filename);  // Save a Radiance HDR file
 }
 
-// Process Keyboard Input (WASD)
 void processInput(GLFWwindow* window)
 {
     if (!window) return;
@@ -187,37 +266,12 @@ void processInput(GLFWwindow* window)
     Camera& cam = renderState->camera;
     bool moved = false;
 
-    // W: 前进
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-        cameraPosition += moveSpeed * cam.view;
-        moved = true;
-    }
-    // S: 后退
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-        cameraPosition -= moveSpeed * cam.view;
-        moved = true;
-    }
-    // A: 向左
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
-        cameraPosition -= moveSpeed * cam.right;
-        moved = true;
-    }
-    // D: 向右
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
-        cameraPosition += moveSpeed * cam.right;
-        moved = true;
-    }
-    // E: 向上 (世界坐标 Y轴)
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
-        cameraPosition += moveSpeed * glm::vec3(0.0f, 1.0f, 0.0f); // 绝对向上
-        // 或者使用相机自身坐标系: cameraPosition += moveSpeed * cam.up;
-        moved = true;
-    }
-    // Q: 向下
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
-        cameraPosition -= moveSpeed * glm::vec3(0.0f, 1.0f, 0.0f);
-        moved = true;
-    }
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) { cameraPosition += moveSpeed * cam.view; moved = true; }
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { cameraPosition -= moveSpeed * cam.view; moved = true; }
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { cameraPosition -= moveSpeed * cam.right; moved = true; }
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { cameraPosition += moveSpeed * cam.right; moved = true; }
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) { cameraPosition += moveSpeed * glm::vec3(0.0f, 1.0f, 0.0f); moved = true; }
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) { cameraPosition -= moveSpeed * glm::vec3(0.0f, 1.0f, 0.0f); moved = true; }
 
     if (moved) {
         camchanged = true;
@@ -227,16 +281,11 @@ void processInput(GLFWwindow* window)
 
 void updateCameraVectors() {
     Camera& cam = renderState->camera;
-
-    // 计算新的方向向量 (View Vector)
     glm::vec3 front;
     front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
     front.y = sin(glm::radians(pitch));
     front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
-
-    // 归一化并更新到相机
     cam.view = glm::normalize(front);
-
     glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
     cam.right = glm::normalize(glm::cross(cam.view, worldUp));
     cam.up = glm::normalize(glm::cross(cam.right, cam.view));
@@ -244,53 +293,48 @@ void updateCameraVectors() {
 
 void runCuda()
 {
-#if ENABLE_VISUALIZATION
-    // 仅在可视化模式下执行以下逻辑
-    processInput(window);
-
-    // ... 保持原有的相机移动更新逻辑 ...
-    if (camchanged) {
-        // 1. 根据最新的 yaw/pitch 更新相机的 view/right/up 向量
-        updateCameraVectors();
-
-        // 2. 将全局的 cameraPosition 同步给摄像机实体
-        renderState->camera.position = cameraPosition;
-
-        // 3. 重置渲染迭代 (关键：移动相机必须重新开始采样)
-        iteration = 0;
-        camchanged = false;
-    }
-
-    if (iteration == 0)
+    // Only execute interaction logic if Visualization is enabled
+    if (g_enableVisualization)
     {
-        //PathtraceFree();
-        PathtraceInit(scene);
+        processInput(window);
+
+        if (camchanged) {
+            updateCameraVectors();
+            renderState->camera.position = cameraPosition;
+            iteration = 0;
+            camchanged = false;
+        }
+
+        if (iteration == 0)
+        {
+            // 使用 Wrapper 函数
+            InitPathTracer(scene);
+        }
+
+        if (iteration < renderState->iterations)
+        {
+            uchar4* pbo_dptr = NULL;
+            iteration++;
+
+            cudaGLMapBufferObject((void**)&pbo_dptr, pbo);
+
+            int frame = 0;
+            // 使用 Wrapper 函数
+            RunPathTracer(pbo_dptr, frame, iteration);
+
+            cudaGLUnmapBufferObject(pbo);
+        }
+        else
+        {
+            saveImage();
+            // 使用 Wrapper 函数
+            FreePathTracer();
+            cudaDeviceReset();
+            exit(EXIT_SUCCESS);
+        }
     }
-
-    if (iteration < renderState->iterations)
-    {
-        uchar4* pbo_dptr = NULL;
-        iteration++;
-
-        // 关键：Nsight Compute 遇到这个 GL Map 就会卡死，Headless 模式下已将其通过宏屏蔽
-        cudaGLMapBufferObject((void**)&pbo_dptr, pbo);
-
-        int frame = 0;
-        Pathtrace(pbo_dptr, frame, iteration);
-
-        cudaGLUnmapBufferObject(pbo);
-    }
-    else
-    {
-        saveImage();
-        PathtraceFree();
-        cudaDeviceReset();
-        exit(EXIT_SUCCESS);
-    }
-#endif
 }
 
-// keyboard and mouse input
 void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
     if (action == GLFW_PRESS)
@@ -301,11 +345,26 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
             saveImage();
             glfwSetWindowShouldClose(window, GL_TRUE);
             break;
-        case GLFW_KEY_P: // 改为 P 键保存截图
+        case GLFW_KEY_P:
             saveImage();
             break;
         case GLFW_KEY_SPACE:
-            // 重置功能：如有需要可以重置到初始位置
+            if (scene) {
+                Camera& cam = scene->state.camera;
+                printf("\n--- Current Camera Parameters ---\n");
+                printf("\"EYE\": [%.4f, %.4f, %.4f],\n",
+                    cam.position.x, cam.position.y, cam.position.z);
+                printf("\"LOOKAT\": [%.4f, %.4f, %.4f],\n",
+                    cam.lookAt.x, cam.lookAt.y, cam.lookAt.z); // 注意：这里的 lookAt 是初始看向的点，动态漫游后你可能更关心 view 向量
+                printf("\"UP\": [%.4f, %.4f, %.4f],\n",
+                    cam.up.x, cam.up.y, cam.up.z);
+                printf("\"FOVY\": %.2f\n", cam.fov.y);
+
+                // 计算当前的 LookAt 点 (Position + View Direction)
+                glm::vec3 currentLookAt = cam.position + cam.view;
+                printf("Calculated LookAt (Pos + View): [%.4f, %.4f, %.4f]\n",
+                    currentLookAt.x, currentLookAt.y, currentLookAt.z);
+            }
             break;
         }
     }
@@ -313,11 +372,7 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
 {
-    if (MouseOverImGuiWindow())
-    {
-        return;
-    }
-
+    if (MouseOverImGuiWindow()) return;
     leftMousePressed = (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS);
     rightMousePressed = (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS);
     middleMousePressed = (button == GLFW_MOUSE_BUTTON_MIDDLE && action == GLFW_PRESS);
@@ -325,40 +380,21 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
 
 void mousePositionCallback(GLFWwindow* window, double xpos, double ypos)
 {
-    if (MouseOverImGuiWindow())
-    {
-        return;
-    }
+    if (MouseOverImGuiWindow()) return;
+    if (firstMouse) { lastX = xpos; lastY = ypos; firstMouse = false; }
 
-    if (firstMouse)
-    {
-        lastX = xpos;
-        lastY = ypos;
-        firstMouse = false;
-    }
-
-    // 按住左键旋转视角
     if (leftMousePressed)
     {
         float xoffset = xpos - lastX;
-        float yoffset = lastY - ypos; // 注意：Y坐标通常是反的，这取决于你的习惯
-        lastX = xpos;
-        lastY = ypos;
-
+        float yoffset = lastY - ypos;
+        lastX = xpos; lastY = ypos;
         xoffset *= mouseSensitivity;
         yoffset *= mouseSensitivity;
-
         yaw += xoffset;
         pitch += yoffset;
-
-        // 限制俯仰角，防止万向节死锁或视角翻转
         if (pitch > 89.0f) pitch = 89.0f;
         if (pitch < -89.0f) pitch = -89.0f;
-
         camchanged = true;
     }
-
-    // 更新上一帧鼠标位置，即使没有按下按键，防止下次点击时跳变
-    lastX = xpos;
-    lastY = ypos;
+    lastX = xpos; lastY = ypos;
 }

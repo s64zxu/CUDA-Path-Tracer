@@ -4,7 +4,6 @@
 #include <thrust/sort.h>
 #include <thrust/execution_policy.h>
 #include "cuda_utilities.h"
-// 测试需要的头文件
 #include <vector>
 #include <stack>
 #include <set>

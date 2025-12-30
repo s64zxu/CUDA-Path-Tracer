@@ -2,7 +2,19 @@
 #include <vector>
 #include <iostream>
 #include "cuda_utilities.h"
-#include "bvh.h" // 需要 BuildLBVH
+#include "bvh.h" 
+#include <map> // [新增] 用于统计材质数量
+#include <iomanip> // [新增] 用于格式化输出
+
+static std::string getMaterialTypeName(MaterialType type) {
+    switch (type) {
+    case MicrofacetPBR:       return "MicrofacetPBR";
+    case DIFFUSE:             return "DIFFUSE";
+    case SPECULAR_REFLECTION: return "SPECULAR_REFLECTION";
+    case SPECULAR_REFRACTION: return "SPECULAR_REFRACTION";
+    default:                  return "UNKNOWN";
+    }
+}
 
 // 宏定义复用
 #define CHECK_CUDA_ERROR(msg) checkCUDAErrorFn(msg, __FILE__, __LINE__)
@@ -14,6 +26,7 @@ WavefrontPathTracerState::~WavefrontPathTracerState() {
         free();
     }
 }
+
 
 void WavefrontPathTracerState::init(Scene* scene) {
     if (m_initialized) return;
@@ -29,10 +42,54 @@ void WavefrontPathTracerState::init(Scene* scene) {
 
     // 4. Wavefront Queues & Buffers
     // 默认路径数量等于像素数量，但在复杂场景下可能需要更多
-    int num_paths = scene->state.camera.resolution.x * scene->state.camera.resolution.y;
+    int num_paths = NUM_PATHS;
     initWavefrontQueues(num_paths);
 
     m_initialized = true;
+
+    if (scene) {
+        size_t total_tris = scene->indices.size() / 3;
+        size_t total_verts = scene->vertices.size();
+
+        // 使用 map 统计每种材质类型的三角形数量
+        std::map<MaterialType, int> mat_type_counts;
+
+        // 初始化计数器为0 (确保所有类型都被打印，即使是0)
+        mat_type_counts[MicrofacetPBR] = 0;
+        mat_type_counts[DIFFUSE] = 0;
+        mat_type_counts[SPECULAR_REFLECTION] = 0;
+        mat_type_counts[SPECULAR_REFRACTION] = 0;
+
+        // 遍历所有三角形进行统计
+        for (size_t i = 0; i < total_tris; ++i) {
+            // 获取当前三角形的材质ID
+            int mat_id = scene->materialIds[i];
+
+            // 安全检查：确保ID在材质数组范围内
+            if (mat_id >= 0 && mat_id < scene->materials.size()) {
+                MaterialType type = scene->materials[mat_id].Type;
+                mat_type_counts[type]++;
+            }
+        }
+
+        std::cout << "================ Scene Info ================" << std::endl;
+        std::cout << "Total Vertices  : " << total_verts << std::endl;
+        std::cout << "Total Triangles : " << total_tris << std::endl;
+        std::cout << "Total Materials : " << scene->materials.size() << std::endl;
+        std::cout << "Lights (Emissive): " << d_light_data.num_lights << std::endl;
+
+        int total_check = 0;
+        for (const auto& pair : mat_type_counts) {
+            float percentage = (total_tris > 0) ? (100.0f * pair.second / total_tris) : 0.0f;
+            std::cout << std::left << std::setw(25) << getMaterialTypeName(pair.first)
+                << ": " << std::setw(8) << pair.second
+                << " (" << std::fixed << std::setprecision(1) << percentage << "%)"
+                << std::endl;
+            total_check += pair.second;
+        }
+        std::cout << "=============================================" << std::endl;
+    }
+
     CHECK_CUDA_ERROR("WavefrontPathTracerState::init");
 }
 

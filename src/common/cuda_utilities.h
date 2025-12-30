@@ -273,3 +273,24 @@ __device__ __forceinline__ void GetSurfaceProperties(
         out_N = glm::normalize(glm::mat3(T, B, N_geom) * mapped_normal);
     }
 }
+
+__device__ __forceinline__ int DecodeNode(int idx)
+{
+    return (idx < 0) ? ~idx : idx;
+}
+
+// 辅助函数：将指针拆分为两个 32 位整数
+static __forceinline__ __device__ void SplitPointer(void* ptr, uint32_t& i0, uint32_t& i1)
+{
+    const uint64_t uptr = reinterpret_cast<uint64_t>(ptr);
+    i0 = uptr >> 32;
+    i1 = uptr & 0x00000000ffffffff;
+}
+
+// 辅助函数：将两个 32 位整数合并回指针
+template<typename T>
+static __forceinline__ __device__ T* MergePointer(uint32_t i0, uint32_t i1)
+{
+    const uint64_t uptr = (static_cast<uint64_t>(i0) << 32) | i1;
+    return reinterpret_cast<T*>(uptr);
+}

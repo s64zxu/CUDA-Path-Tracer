@@ -16,15 +16,17 @@
 #include "interactions.h"
 #include "rng.h"
 #include "bvh.h"
-#include "wavefront_internal.h" // 【核心】引入状态管理类
+#include "wavefront_internal.h"
 #include "shading.h"
-#include "ray_cast.h"
+#include "ray_cast.h"       // 传统 CUDA 求交头文件
 #include "logic.h"
 #include "ray_gen.h"
+#include "optix/optix_ray_cast.h" // OptiX 求交头文件
 
-#define ENABLE_VISUALIZATION 1
-
-#define CUDA_ENABLE_ERROR_CHECK 0
+// ==========================================
+// 【核心开关】注释掉这行以使用传统 CUDA 求交
+#define USE_OPTIX 
+// ==========================================
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #if CUDA_ENABLE_ERROR_CHECK
@@ -39,6 +41,10 @@
 __constant__ __align__(16) unsigned char c_materials_storage[MAX_SCENE_MATERIALS * sizeof(Material)];
 __constant__ __align__(16) unsigned char c_textures_storage[MAX_SCENE_TEXTURES * sizeof(cudaTextureObject_t)];
 
+extern bool g_enableVisualization;
+
+// 全局 OptiX 管理器实例
+static OptixRayCast* g_optix_ray_caster = nullptr;
 
 namespace pathtrace_wavefront
 {
@@ -102,17 +108,21 @@ namespace pathtrace_wavefront
             pState = new WavefrontPathTracerState();
         }
 
-        // 1. 初始化通用 Image Buffer (依赖相机分辨率)
         if (pState->d_image == nullptr) {
             pState->initImageSystem(scene->state.camera);
         }
 
-        // 2. 初始化场景相关数据 (如果尚未初始化)
         if (!pState->isInitialized()) {
+
             pState->init(scene);
 
-            // 3. 渲染器本地优化：刷新 Constant Memory
             UpdateConstantMemory(scene);
+
+            if (g_optix_ray_caster == nullptr) {
+                g_optix_ray_caster = new OptixRayCast();
+                g_optix_ray_caster->Init(pState);
+                printf("[Wavefront] OptiX Ray Caster Initialized.\n");
+            }
 
             printf("[Wavefront] State Initialized.\n");
         }
@@ -125,6 +135,12 @@ namespace pathtrace_wavefront
 
     void PathtraceFree()
     {
+        // 释放 OptiX 资源
+        if (g_optix_ray_caster) {
+            delete g_optix_ray_caster;
+            g_optix_ray_caster = nullptr;
+        }
+
         if (pState) {
             pState->free();
             delete pState;
@@ -190,7 +206,7 @@ namespace pathtrace_wavefront
 
         long long total_rays = 0;
 
-        for (int step = 0; step < 4; step++) // Logic: PathLogic -> Shading -> ray_cast
+        for (int step = 0; step < 5; step++) // Logic: PathLogic -> Shading -> ray_cast
         {
             // 重置队列计数器
             pState->resetCounters();
@@ -257,12 +273,24 @@ namespace pathtrace_wavefront
 
             // Extension Rays (Next Bounce)
             if (num_extension_rays > 0) {
-                TraceExtensionRay(num_extension_rays, pState);
+#ifdef USE_OPTIX
+                // 【OptiX 路径】
+                if (g_optix_ray_caster) g_optix_ray_caster->TraceExtensionRay(num_extension_rays, pState);
+#else
+                // 【CUDA 路径】
+                ray_cast::TraceExtensionRay(num_extension_rays, pState);
+#endif
             }
 
             // Shadow Rays (NEE)
             if (num_shadow_rays > 0) {
-                TraceShadowRay(num_shadow_rays, pState);
+#ifdef USE_OPTIX
+                // 【OptiX 路径】
+                if (g_optix_ray_caster) g_optix_ray_caster->TraceShadowRay(num_shadow_rays, pState);
+#else
+                // 【CUDA 路径】
+                ray_cast::TraceShadowRay(num_shadow_rays, pState);
+#endif
             }
             CHECK_CUDA_ERROR("Ray Casting");
 
@@ -283,13 +311,14 @@ namespace pathtrace_wavefront
         cudaEventDestroy(start);
         cudaEventDestroy(stop);
 
-#if ENABLE_VISUALIZATION == 1
-        cudaDeviceSynchronize();
-        SendImageToPBOKernel << <blocks_per_grid_2d, block_size_2d >> > (pbo, cam.resolution, iter, pState->d_image, pState->d_pixel_sample_count);
-        if (hst_scene->state.image.size() < pixel_count) {
-            hst_scene->state.image.resize(pixel_count);
+        if (g_enableVisualization)
+        {
+            cudaDeviceSynchronize();
+            SendImageToPBOKernel << <blocks_per_grid_2d, block_size_2d >> > (pbo, cam.resolution, iter, pState->d_image, pState->d_pixel_sample_count);
+            if (hst_scene->state.image.size() < pixel_count) {
+                hst_scene->state.image.resize(pixel_count);
+            }
+            cudaMemcpy(hst_scene->state.image.data(), pState->d_image, pixel_count * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
         }
-        cudaMemcpy(hst_scene->state.image.data(), pState->d_image, pixel_count * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
-#endif
     }
 }

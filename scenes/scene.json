@@ -1,29 +1,23 @@
 {
   "Camera": {
-    "RES": [ 1920, 1080 ],
+    "RES": [ 800, 600 ],
     "FOVY": 45.0,
     "ITERATIONS": 5000,
     "DEPTH": 8,
     "FILE": "bunny_render",
-    "EYE": [ 100, 0.0, 0.0 ],
-    "LOOKAT": [ 0.0, 300.0, 0.0 ],
-    "UP": [ 0.0, 1.0, 0.0 ]
+    "EYE": [ 59.1116, 37.9075, -83.9374 ],
+    "LOOKAT": [ 59.0805, 37.6682, -82.9670 ],
+    "UP": [ -0.0077, 0.9710, 0.2392 ]
   },
   "Environment Texture": {
     "FILE": "../scenes/EnvMap/rosendal_plains_2_2k.hdr"
   },
   "Objects": [
     {
-      "TRANS": [ 0, 300, 0 ],
+      "TRANS": [ 0, 0, 0 ],
       "ROTAT": [ 0, 0, 0 ],
-      "SCALE": [ 50 , 50, 50 ],
-      "FILE": "../scenes/bunny.obj"
-    },
-    {
-      "TRANS": [ 500, 1000, 0 ],
-      "ROTAT": [ 0, 0, 0 ],
-      "SCALE": [ 8, 8, 8 ],
-      "FILE": "../scenes/light_cube.obj"
+      "SCALE": [ 30, 30, 30 ],
+      "FILE": "../scenes/fireplace_room/fireplace_room.obj"
     }
   ]
 }

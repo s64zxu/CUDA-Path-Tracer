@@ -22,6 +22,7 @@ namespace pathtrace_wavefront {
         int trace_depth,
         int num_paths,
         PathState d_path_state,
+        MeshData d_mesh_data,
         glm::vec3* d_image,
         LightData d_light_data,
         EnvMapAliasTable d_env_alias_table,
@@ -110,9 +111,14 @@ namespace pathtrace_wavefront {
                     int queue_idx = DispatchPathIndex(d_new_path_counter);
                     d_new_path_queue[queue_idx] = idx;
 
-                    float4 hit_nor = d_path_state.hit_normal[idx];
+                    float4 hit_uv = d_path_state.hit_normal[idx]; // todo: fix
+                    int prim_id = d_path_state.hit_geom_id[idx];
+                    int mat_id = d_path_state.material_id[idx];
+                    Material material = c_materials[mat_id];
+                    glm::vec3 N; glm::vec2 uv;
+                    GetSurfaceProperties(d_mesh_data, c_textures, prim_id, hit_uv.x, hit_uv.y, material, N, uv);
+
                     float4 ray_dir_dist = d_path_state.ray_dir_dist[idx];
-                    glm::vec3 N = MakeVec3(hit_nor);
                     glm::vec3 ray_dir = MakeVec3(ray_dir_dist);
                     glm::vec3 wo = -ray_dir;
                     float misWeight = 1.0f;
@@ -173,7 +179,7 @@ namespace pathtrace_wavefront {
 
             PathLogicKernel << <nb, bs >> > (
                 trace_depth, num_paths,
-                pState->d_path_state, pState->d_image,
+                pState->d_path_state, pState->d_mesh_data, pState->d_image,
                 pState->d_light_data, pState->d_env_alias_table,
                 pState->d_pbr_queue, pState->d_pbr_counter,
                 pState->d_diffuse_queue, pState->d_diffuse_counter,

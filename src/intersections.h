@@ -28,16 +28,3 @@ __device__ float BoudingboxIntersetionTest(
     const Ray& r,
     const glm::vec3& inv_dir
 );
-
-__device__ HitInfo BVHIntersection(
-    Ray ray,
-    const MeshData mesh_data,
-    const LBVHData bvh_data
-);
-
-__device__ bool BVHOcclusion(
-    Ray ray,
-    float t_max,
-    const MeshData mesh_data,
-    const LBVHData bvh_data
-);

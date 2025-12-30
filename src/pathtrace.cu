@@ -21,7 +21,7 @@
 #include "rng.h"
 #include "bvh.h"
 
-#define ENABLE_VISUALIZATION 0
+extern bool g_enableVisualization;
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
 
@@ -38,7 +38,7 @@ namespace pathtrace_megakernel
         float v;
     };
 
-    // 查找最近交点 (原 TraceExtensionRayKernel 逻辑)
+    // Find Nearest Intersection
     __device__ HitInfo FindNearestIntersection(
         Ray ray,
         const MeshData mesh_data,
@@ -50,7 +50,6 @@ namespace pathtrace_megakernel
 
         glm::vec3 inv_dir = 1.0f / ray.direction;
 
-        // [Safety] Increased stack size and added bounds check
         int stack[64];
         int stack_ptr = 0;
         int node_idx = 0;
@@ -108,13 +107,12 @@ namespace pathtrace_megakernel
                     int first = (t_l < t_r) ? left : right;
                     int second = (t_l < t_r) ? right : left;
 
-                    // [Safety] Prevent stack overflow
                     if (stack_ptr < 64) {
                         stack[stack_ptr++] = second;
                         node_idx = first;
                     }
                     else {
-                        node_idx = first; // Fallback: Traverse near node only
+                        node_idx = first;
                     }
                 }
                 else if (hit_l) node_idx = left;
@@ -125,7 +123,7 @@ namespace pathtrace_megakernel
         return hit;
     }
 
-    // 阴影遮挡测试 (原 TraceShadowRayKernel 逻辑)
+    // Shadow Occlusion Test
     __device__ bool IsOccluded(
         Ray ray,
         float t_max,
@@ -134,8 +132,6 @@ namespace pathtrace_megakernel
     {
         glm::vec3 inv_dir = 1.0f / ray.direction;
         int node_idx = 0;
-        int stack[64]; // Use stack for traversal or ropes if available. Here assuming stackless or restart. 
-        // Note: The provided wavefront IsOccluded used escape indices (ropes), let's use that for speed.
 
         while (node_idx != -1)
         {
@@ -177,7 +173,7 @@ namespace pathtrace_megakernel
         return false;
     }
 
-    // 获取表面属性 (合并了 GetInterpolatedUV 和 GetShadingNormal)
+    // Get Surface Properties (UV, Normal, Tangent)
     __device__ __forceinline__ void GetSurfaceProperties(
         const MeshData& mesh_data,
         Material* d_materials,
@@ -244,9 +240,10 @@ namespace pathtrace_megakernel
         Camera cam,
         Material* d_materials,
         LightData light_data,
+        EnvMapAliasTable env_map, // HDR Data
         MeshData mesh_data,
         LBVHData bvh_data,
-        cudaTextureObject_t* d_texture_objects // Explicit texture object array
+        cudaTextureObject_t* d_texture_objects
     )
     {
         int x = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -255,7 +252,6 @@ namespace pathtrace_megakernel
 
         if (x >= cam.resolution.x || y >= cam.resolution.y) return;
 
-        // Thread-local ray counter for stats
         int thread_ray_count = 0;
 
         // 1. Initialize RNG
@@ -285,13 +281,28 @@ namespace pathtrace_megakernel
         // =========================================================================
         for (int depth = 0; depth < max_depth && active; ++depth)
         {
-            thread_ray_count++; // Extension ray
+            thread_ray_count++;
 
             // --- Intersection ---
             HitInfo hit = FindNearestIntersection(ray, mesh_data, bvh_data);
 
+            // --- Miss Shader (Environment Map) ---
             if (hit.geom_id == -1) {
-                // Environment Light could be sampled here
+                if (env_map.env_tex_id >= 0) {
+                    glm::vec3 unitDir = glm::normalize(ray.direction);
+                    float theta = acos(unitDir.y);
+                    float phi = atan2(unitDir.z, unitDir.x);
+                    if (phi < 0) phi += 2 * PI;
+
+                    float u = phi * INV_TWO_PI;
+                    float v = theta * INV_PI;
+
+                    // Sample HDR texture
+                    float4 envColor = tex2D<float4>(d_texture_objects[env_map.env_tex_id], u, v);
+                    accumulated_color += throughput * glm::vec3(envColor.x, envColor.y, envColor.z);
+                }
+                // If no env map, color remains black (background)
+
                 active = false;
                 break;
             }
@@ -306,11 +317,9 @@ namespace pathtrace_megakernel
             glm::vec3 intersect_point = ray.origin + ray.direction * hit.t;
             glm::vec3 wo = -ray.direction;
 
-            // Face forward
             if (glm::dot(Ng, wo) < 0.0f) { Ng = -Ng; }
 
-            // Sample Textures
-#if ENABLE_VISUALIZATION 
+            // Apply Textures
             if (material.diffuse_tex_id >= 0) {
                 float4 texColor = tex2D<float4>(d_texture_objects[material.diffuse_tex_id], uv.x, uv.y);
                 material.basecolor *= glm::pow(glm::vec3(texColor.x, texColor.y, texColor.z), glm::vec3(2.2f));
@@ -320,12 +329,11 @@ namespace pathtrace_megakernel
                 material.roughness *= rmSample.y;
                 material.metallic *= rmSample.z;
             }
-#endif
 
             // --- Emission (Implicit Light Hit) ---
             if (material.emittance > 0.0f) {
                 float misWeight = 1.0f;
-                // Simple MIS check
+                // Simple MIS check (only for mesh lights)
                 if (depth > 0 && light_data.num_lights > 0) {
                     bool prevWasSpecular = (last_pdf > (PDF_DIRAC_DELTA * 0.9f));
                     if (!prevWasSpecular) {
@@ -346,6 +354,7 @@ namespace pathtrace_megakernel
             }
 
             // --- Direct Lighting (Next Event Estimation) ---
+            // NOTE: Only sampling Mesh Lights as requested.
             if (light_data.num_lights > 0 && material.Type != SPECULAR_REFLECTION && material.Type != SPECULAR_REFRACTION)
             {
                 glm::vec3 light_sample_pos;
@@ -353,6 +362,7 @@ namespace pathtrace_megakernel
                 float pdf_light_area;
                 int light_idx;
 
+                // Only samples mesh lights, ignoring environment map for direct light sampling
                 SampleLight(mesh_data, light_data.tri_idx, light_data.cdf,
                     light_data.num_lights, light_data.total_area,
                     seed, light_sample_pos, light_N, pdf_light_area, light_idx);
@@ -383,7 +393,7 @@ namespace pathtrace_megakernel
                             shadowRay.direction = wi_L;
                             float t_max = dist_L - 2.0f * EPSILON;
 
-                            thread_ray_count++; // Shadow ray
+                            thread_ray_count++;
 
                             if (!IsOccluded(shadowRay, t_max, mesh_data, bvh_data)) {
                                 accumulated_color += L_potential;
@@ -419,7 +429,6 @@ namespace pathtrace_megakernel
             throughput *= attenuation;
             last_pdf = next_pdf;
 
-            // Bias and Update Ray
             bool is_reflect = glm::dot(next_dir, Ng) > 0.0f;
             glm::vec3 bias_n = is_reflect ? Ng : -Ng;
             ray.origin = intersect_point + bias_n * EPSILON;
@@ -438,14 +447,13 @@ namespace pathtrace_megakernel
             }
         }
 
-        // Stats
+        // Stats & Write Result
         if (thread_ray_count > 0) {
             atomicAdd(d_total_rays, (unsigned long long)thread_ray_count);
         }
 
-        // Write Result
         atomicAdd(&d_sample_count[pixel_index], 1);
-        if (accumulated_color.x == accumulated_color.x) { // NaN check
+        if (accumulated_color.x == accumulated_color.x) {
             atomicAdd(&(d_image[pixel_index].x), accumulated_color.x);
             atomicAdd(&(d_image[pixel_index].y), accumulated_color.y);
             atomicAdd(&(d_image[pixel_index].z), accumulated_color.z);
@@ -487,6 +495,7 @@ namespace pathtrace_megakernel
     static MeshData d_mesh_data;
     static LBVHData d_bvh_data;
     static LightData d_light_data;
+    static EnvMapAliasTable d_env_table; // Device side container for EnvMap struct
 
     void InitDataContainer(GuiDataContainer* imGuiData) { hst_gui_data = imGuiData; }
 
@@ -533,14 +542,29 @@ namespace pathtrace_megakernel
             d_light_data.num_lights = 0;
         }
 
-        // Mesh Geometry Copy (Simplified from Wavefront init)
+        // EnvMap Data
+        d_env_table.env_tex_id = scene->env_map.env_tex_id;
+        d_env_table.pdf_map_id = scene->env_map.pdf_map_id;
+        d_env_table.width = scene->env_map.width;
+        d_env_table.height = scene->env_map.height;
+
+        int env_size = scene->env_map.width * scene->env_map.height;
+        if (env_size > 0 && !scene->env_map.probs.empty()) {
+            cudaMalloc(&d_env_table.probs, env_size * sizeof(float));
+            cudaMemcpy(d_env_table.probs, scene->env_map.probs.data(), env_size * sizeof(float), cudaMemcpyHostToDevice);
+
+            cudaMalloc(&d_env_table.aliases, env_size * sizeof(int));
+            cudaMemcpy(d_env_table.aliases, scene->env_map.aliases.data(), env_size * sizeof(int), cudaMemcpyHostToDevice);
+        }
+        else {
+            d_env_table.probs = nullptr;
+            d_env_table.aliases = nullptr;
+        }
+
+        // Mesh Geometry Copy 
         size_t num_verts = scene->vertices.size();
         size_t num_tris = scene->indices.size() / 3;
 
-        // ... (Skipping host vector packing for brevity, assuming same vectors as Wavefront input)
-        // You would perform the exact same t_pos, t_nor, t_indices packing here as in the input file.
-
-        // Re-using the packing logic from your input file:
         std::vector<float4> t_pos; t_pos.reserve(num_verts);
         std::vector<float4> t_nor; t_nor.reserve(num_verts);
         std::vector<float2> t_uv;  t_uv.reserve(num_verts);
@@ -603,6 +627,7 @@ namespace pathtrace_megakernel
         cudaFree(d_materials);
         cudaFree(d_texture_objects);
         cudaFree(d_light_data.tri_idx); cudaFree(d_light_data.cdf);
+        cudaFree(d_env_table.probs); cudaFree(d_env_table.aliases);
         cudaFree(d_mesh_data.pos); cudaFree(d_mesh_data.nor); cudaFree(d_mesh_data.tangent);
         cudaFree(d_mesh_data.uv); cudaFree(d_mesh_data.indices_matid); cudaFree(d_mesh_data.nor_geom);
         cudaFree(d_bvh_data.aabb_min); cudaFree(d_bvh_data.aabb_max);
@@ -661,6 +686,7 @@ namespace pathtrace_megakernel
             cam,
             d_materials,
             d_light_data,
+            d_env_table,  // Added EnvMap Arg
             d_mesh_data,
             d_bvh_data,
             d_texture_objects
@@ -681,10 +707,10 @@ namespace pathtrace_megakernel
 
         cudaEventDestroy(start);
         cudaEventDestroy(stop);
-
-#if ENABLE_VISUALIZATION
-        SendImageToPBOKernel << <gridSize, blockSize >> > (pbo, cam.resolution, iter, d_image, d_pixel_sample_count);
-#endif
-        checkCUDAError("Pathtrace MegaKernel");
+        if (g_enableVisualization)
+        {
+            SendImageToPBOKernel << <gridSize, blockSize >> > (pbo, cam.resolution, iter, d_image, d_pixel_sample_count);
+            checkCUDAError("Pathtrace MegaKernel");
+        }
     }
 }

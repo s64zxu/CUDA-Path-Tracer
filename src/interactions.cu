@@ -215,11 +215,11 @@ __device__ float pdfBSDF(glm::vec3 wo, glm::vec3 wi, glm::vec3 N, Material m) {
         return pdfSpecularRefraction(wo, wi, N);
 }
 
-// ========================================================================
-// 3. Sampling (BSDF 采样)
-// 输入: wo, N, 材质, 随机数
-// 输出: wi, pdf, throughput
-// ========================================================================
+ //========================================================================
+ //3. Sampling (BSDF 采样)
+ //输入: wo, N, 材质, 随机数
+ //输出: wi, pdf, throughput
+ //========================================================================
 __host__ __device__ glm::vec3 samplePBR(
     const glm::vec3& wo, glm::vec3& wi, float& pdf, const glm::vec3& N, const Material& m, unsigned int& seed)
 {
@@ -251,6 +251,74 @@ __host__ __device__ glm::vec3 samplePBR(
 	// attenuation = fr * costheta / pdf
     return fr * max(0.0f, glm::dot(N, wi)) / max(pdf, EPSILON);
 }
+
+//__host__ __device__ glm::vec3 samplePBR(
+//    const glm::vec3& wo, glm::vec3& wi, float& pdf, const glm::vec3& N, const Material& m, unsigned int& seed)
+//{
+//    glm::vec2 xi = glm::vec2(rand_float(seed), rand_float(seed));
+//    float r_select = rand_float(seed);
+//
+//    float roughness = glm::clamp(m.roughness, 0.01f, 1.0f);
+//    float specProb = CalculateSpecularProbability(m, N, wo);
+//
+//    // 决策：采样高光还是漫反射
+//    if (r_select < specProb) {
+//        wi = NDFImportanceSampling(N, wo, roughness, xi);
+//    }
+//    else {
+//        wi = CosineWeightedSampling(N, xi);
+//    }
+//
+//    wi = glm::normalize(wi);
+//
+//    // 确保采样方向有效
+//    if (glm::dot(N, wi) <= 0.0f) {
+//        pdf = 0.0f;
+//        return glm::vec3(0.0f);
+//    }
+//
+//    // 计算 PDF 和 BRDF 值
+//    pdf = pdfPBR(wo, wi, N, m);
+//    glm::vec3 fr = evalPBR(wo, wi, N, m);
+//    
+//    // attenuation = fr * costheta / pdf
+//    glm::vec3 baseAttenuation = fr * max(0.0f, glm::dot(N, wi)) / max(pdf, EPSILON);
+//
+//    // ============================================================
+//    // 【压力测试注入点】人为增加计算负载 (Heavy Compute Injection)
+//    // ============================================================
+//    // 目的：增加大量 ALU/SFU 指令，强制 GPU 进入 Compute Bound 状态，
+//    // 同时通过乘以理论上的 1.0 来保持结果不变。
+//
+//    float dummyMultiplier = 1.0f;
+//    // 使用一些每个线程都不同的输入值作为初始种子，防止编译器把整个循环优化成一个常量。
+//    // 这里使用了材质粗糙度、法线和出射方向的分量组合。
+//    float mathSeed = roughness + N.x * 0.5f + wo.y * 0.2f;
+//
+//    // 注意：使用 #pragma unroll 可能会导致指令爆炸，视情况而定，这里先让它自然循环
+//    for (int i = 0; i < 8000; ++i) {
+//        // 构造一个随迭代变化的输入值
+//        float t = mathSeed * (float)(i + 1) * 0.1f;
+//        
+//        // 大量消耗 SFU (Special Function Unit) 周期
+//        // 使用 sinf/cosf 确保调用的是单精度浮点版本
+//        float s = sinf(t);
+//        float c = cosf(t);
+//        
+//        // 利用三角恒等式：sin^2 + cos^2 = 1.0
+//        // 我们不断地乘以这个值。由于浮点误差，它可能不完全是 1.0，但对于压力测试来说足够接近。
+//        dummyMultiplier *= (s * s + c * c);
+//        
+//        // 可选：如果需要增加更多的纯 ALU (乘加运算) 压力，可以取消下面这行的注释
+//        // dummyMultiplier = glm::mix(dummyMultiplier, 1.0f, 0.0001f); 
+//    }
+//    // ============================================================
+//    // 【结束注入】
+//    // ============================================================
+//
+//    // 将计算结果乘上去，确保编译器认为这个循环是有意义的
+//    return baseAttenuation * dummyMultiplier;
+//}
 
 __host__ __device__ glm::vec3 sampleDiffuse(
     const glm::vec3& wo, glm::vec3& wi, float& pdf, const glm::vec3& N, const Material& m, unsigned int& seed)
