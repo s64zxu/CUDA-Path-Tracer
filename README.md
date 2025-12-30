@@ -114,7 +114,7 @@ This section evaluates the performance impact of integrating **NVIDIA OptiX 9.1*
 
 Experiment was conducted on **RTX 3060 laptop ** using the Wavefront architecture and  **Sponza scene** **(262,279 triangles).**
 
-<img src="img/optix vs. software plot.png" alt="stress_test_mega_vs_wavefront" style="zoom:67%;" />
+<img src="img/optix_vs_software_plot.png" alt="stress_test_mega_vs_wavefront" style="zoom:67%;" />
 
 The integration yields a significant **8.19x speedup** in ray traversal throughput. In general, this performance leap is driven by two factors: First, the OptiX constructs highly optimized and efficient BVH structures. Second, the RT Cores leverage dedicated hardware circuits to execute ray-triangle intersection tests significantly faster than software Moller-Trumbore algorithm.
 
