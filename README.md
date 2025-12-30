@@ -67,7 +67,7 @@ Root Cause of Memory Bound:
 
 The ray intersection kernel writes a staggering **6.87 GB** from L2 to Device Memory (Reading only 1.93 GB). This 6.87 GB of traffic is solely for maintaining global ray state—an overhead completely absent in the Megakernel, which passes state efficiently via registers.
 
-<img src="img/memory chart of wavefront.png" alt="image-20251226082936565" style="zoom: 80%;" />
+<p align="center">   <img src="img/memory chart of wavefront.png" width="80%" /> </p>
 
 #### 2. Register Pressure and Occupancy
 
@@ -106,15 +106,15 @@ In Wavefront, this metric improves significantly in compute-heavy stages:
 
 To analyze the architectural behavior under heavy computational loads (simulating complex material shaders), a synthetic loop computation ($\sin^2 \theta + \cos^2 \theta$) was injected into the PBR shading kernel. And the result shows Wavefront scales better with material complexity. 
 
-<img src="img/stress_test_mega_vs_wavefront.png" alt="stress_test_mega_vs_wavefront" style="zoom:67%;" />
+<p align="center">   <img src="img/stress_test_mega_vs_wavefront.png" width="80%" /> </p>
 
 ## 3.2 Hardware Accelerated Ray Tracing 
 
 This section evaluates the performance impact of integrating **NVIDIA OptiX 9.1**, which leverages hardware-accelerated intersection and BVH traversal via **RT Cores**.
 
-Experiment was conducted on **RTX 3060 laptop ** using the Wavefront architecture and  **Sponza scene** **(262,279 triangles).**
+Experiment was conducted on **RTX 3060 laptop** using the Wavefront architecture and  **Sponza scene** **(262,279 triangles).**
 
-<img src="img/optix_vs_software_plot.png" alt="stress_test_mega_vs_wavefront" style="zoom:67%;" />
+<p align="center">   <img src="img/optix_vs_software_plot.png" width="60%" /> </p>
 
 The integration yields a significant **8.19x speedup** in ray traversal throughput. In general, this performance leap is driven by two factors: First, the OptiX constructs highly optimized and efficient BVH structures. Second, the RT Cores leverage dedicated hardware circuits to execute ray-triangle intersection tests significantly faster than software Moller-Trumbore algorithm.
 
