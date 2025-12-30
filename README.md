@@ -8,6 +8,10 @@ High-performance C++/CUDA Path Tracer featuring Wavefront architecture, GPU-para
 
 ![Sponza](img/Sponza.png)
 
+| <img src="img\bunny_reflection.png" alt="bunny_reflection" style="zoom:40%;" /> | <img src="img\bunny_refraction.png" alt="bunny_refraction" style="zoom:40%;" /> | <img src="img\bunny_pbr.png" alt="bunny_pbr" style="zoom:40%;" /> |
+| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| **Specular Reflection**                                      | **Specular Refraction**                                      | **Microfacet PBR**                                           |
+
 # 2. Features
 
 - **Wavefront Architecture:**  Decouples the rendering pipeline into independent Logic, Shading, and RayCast stages, utilizing multi-level task queues for efficient management.
@@ -16,10 +20,11 @@ High-performance C++/CUDA Path Tracer featuring Wavefront architecture, GPU-para
 - **Multiple Importance Sampling :** Combines BSDF sampling and Next Event Estimation (NEE) to reduce variance.
 - **Bindless Texture Mapping:** Implements a handle-based system to efficiently map textures  without binding limitations.
 - **HDR Environment Sampling:** Implements importance sampling for HDR skyboxes using the Alias Method.
+- **OptiX Integration:** Integrates NVIDIA OptiX to leverage RT Cores for accelerating BVH traversal and ray-triangle intersection.
 
-# 3. Analysis
+# 3. Performance Analysis
 
-## Megakernel vs. Wavefront
+## 3.1 Megakernel vs. Wavefront
 
 This section analyzes the performance trade-offs between **Megakernel** and **Wavefront** architectures. The key finding is that while Wavefront successfully mitigates thread divergence, the overhead of global memory traffic becomes the bottleneck in moderate-complexity scenes.
 
@@ -99,12 +104,21 @@ In Wavefront, this metric improves significantly in compute-heavy stages:
 
 ### Phase II: Heavy Shading Stress Test 
 
-To analyze the architectural behavior under heavy computational loads (simulating complex material shaders), a synthetic loop computation ($\sin^2 \theta + \cos^2 \theta$) was injected into the PBR shading kernel. And the result shows Wavefront scales better with shader complexity. 
+To analyze the architectural behavior under heavy computational loads (simulating complex material shaders), a synthetic loop computation ($\sin^2 \theta + \cos^2 \theta$) was injected into the PBR shading kernel. And the result shows Wavefront scales better with material complexity. 
 
 <img src="img/stress_test_mega_vs_wavefront.png" alt="stress_test_mega_vs_wavefront" style="zoom:67%;" />
 
-## Materials
+## 3.2 Hardware Accelerated Ray Tracing 
 
-| <img src="img\bunny_reflection.png" alt="bunny_reflection" style="zoom:40%;" /> | <img src="img\bunny_refraction.png" alt="bunny_refraction" style="zoom:40%;" /> | <img src="img\bunny_pbr.png" alt="bunny_pbr" style="zoom:40%;" /> |
-| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| **Specular Reflection**                                      | **Specular Refraction**                                      | **Microfacet PBR**                                           |
+This section evaluates the performance impact of integrating **NVIDIA OptiX 9.1**, which leverages hardware-accelerated intersection and BVH traversal via **RT Cores**.
+
+Experiment was conducted on **RTX 3060 laptop ** using the Wavefront architecture and  **Sponza scene** **(262,279 triangles).**
+
+<img src="img/optix vs. software plot.png" alt="stress_test_mega_vs_wavefront" style="zoom:67%;" />
+
+The integration yields a significant **8.19x speedup** in ray traversal throughput. In general, this performance leap is driven by two factors: First, the OptiX constructs highly optimized and efficient BVH structures. Second, the RT Cores leverage dedicated hardware circuits to execute ray-triangle intersection tests significantly faster than software Moller-Trumbore algorithm.
+
+
+
+🚧 **Work In Progress**.... 🚧
+
