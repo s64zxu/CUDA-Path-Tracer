@@ -9,33 +9,33 @@ extern "C" __global__ void __raygen__extension()
     uint3 idx = optixGetLaunchIndex();
     int queue_index = idx.x;
     if (queue_index >= params.extension_counter) return;
-
+    int path_index = __ldg(&params.extension_ray_queue[queue_index]);
     HitInfo hit_info;
     hit_info.hit_geom_id = -1;
     uint32_t p0, p1; // 存储指针的2个32位整数
     SplitPointer(&hit_info, p0, p1);
 
-    float3 origin = MakeFloat3(__ldg(&params.path_state.ray_ori[queue_index]));
-    float3 dir = MakeFloat3(__ldg(&params.path_state.ray_dir_dist[queue_index]));
+    float3 origin = MakeFloat3(__ldg(&params.path_state.ray_ori[path_index]));
+    float3 dir = MakeFloat3(__ldg(&params.path_state.ray_dir_dist[path_index]));
 
     optixTrace(
         params.handle, origin, dir,
         0.00001f, 1e16f, 0.0f, // tmin, tmax, time
         OptixVisibilityMask(1), 
         OPTIX_RAY_FLAG_DISABLE_ANYHIT, // anyhit仅用于alpha test
-        0, 2, 0, // SBT info   todo: check why 0 2 0
+        0, 2, 0, // SBT info   todo: why 0 2 0
         p0, p1 
     );
     if (hit_info.hit_geom_id == -1) {
-        params.path_state.ray_dir_dist[queue_index].w = -1.0f;
-        params.path_state.hit_geom_id[queue_index] = -1;
+        params.path_state.ray_dir_dist[path_index].w = -1.0f;
+        params.path_state.hit_geom_id[path_index] = -1;
     }
     else {
         int4 idx_mat = params.indices_matid[hit_info.hit_geom_id];
-        params.path_state.ray_dir_dist[queue_index].w = hit_info.t_hit;
-        params.path_state.material_id[queue_index] = idx_mat.w;
-        params.path_state.hit_geom_id[queue_index] = hit_info.hit_geom_id;
-        params.path_state.hit_normal[queue_index] = make_float4(
+        params.path_state.ray_dir_dist[path_index].w = hit_info.t_hit;
+        params.path_state.material_id[path_index] = idx_mat.w;
+        params.path_state.hit_geom_id[path_index] = hit_info.hit_geom_id;
+        params.path_state.hit_normal[path_index] = make_float4(
             hit_info.hit_u, hit_info.hit_v, 0.0f, 0.0f);
     }
 }
