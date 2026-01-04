@@ -6,6 +6,8 @@
 
 High-performance C++/CUDA Path Tracer featuring Wavefront architecture, GPU-parallel LBVH, MIS, and bindless texture mapping.
 
+<img src="img/mc scene.png" />
+
 ![Sponza](img/Sponza.png)
 
 | <img src="img\bunny_reflection.png" alt="bunny_reflection" style="zoom:40%;" /> | <img src="img\bunny_refraction.png" alt="bunny_refraction" style="zoom:40%;" /> | <img src="img\bunny_pbr.png" alt="bunny_pbr" style="zoom:40%;" /> |
@@ -21,6 +23,7 @@ High-performance C++/CUDA Path Tracer featuring Wavefront architecture, GPU-para
 - **Bindless Texture Mapping:** Implements a handle-based system to efficiently map textures  without binding limitations.
 - **HDR Environment Sampling:** Implements importance sampling for HDR skyboxes using the Alias Method.
 - **OptiX Integration:** Integrates NVIDIA OptiX to leverage RT Cores for accelerating BVH traversal and ray-triangle intersection.
+- **SVGF Denoising:** Implements Spatiotemporal Variance-Guided Filtering (SVGF), utilizing temporal reprojection and spatial wavelet filtering for efficient real-time noise reduction.
 
 # 3. Performance Analysis
 
@@ -118,7 +121,13 @@ Experiment was conducted on **RTX 3060 laptop** using the Wavefront architecture
 
 The integration yields a significant **8.19x speedup** in ray traversal throughput. In general, this performance leap is driven by two factors: First, the OptiX constructs highly optimized and efficient BVH structures. Second, the RT Cores leverage dedicated hardware circuits to execute ray-triangle intersection tests significantly faster than software Moller-Trumbore algorithm.
 
+## 3.3 SVGF
 
+<img src="img/svgf comparation.png"/>
+
+SVGF filter takes (left) 1 sample per pixel path-traced input and reconstructs (center) a 1920x1080 clean image in just **11.2 ms**. Compare to (right) a 500 samples per pixel reference.
+
+## 3.4 AoS vs. SoA Memory Layout
 
 🚧 **Work In Progress**.... 🚧
 
