@@ -14,7 +14,8 @@ namespace pathtrace_wavefront {
         void RunPathLogic(
             int num_paths,
             int trace_depth,
-            const WavefrontPathTracerState * pState
+            const WavefrontPathTracerState * pState,
+            float2 resolution
         );
     }
     

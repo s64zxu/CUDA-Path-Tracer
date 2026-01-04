@@ -125,7 +125,7 @@ namespace pathtrace_wavefront {
     static __global__ void TraceShadowRayKernel(
         ShadowQueue d_shadow_queue,
         int d_shadow_queue_counter,
-        glm::vec3* d_image,
+        glm::vec3* d_direct_image,
         const MeshData mesh_data,
         const LBVHData d_bvh_data)
     {
@@ -195,7 +195,7 @@ namespace pathtrace_wavefront {
                 // 结果写入不需要 LDG，且为 Atomic 操作
                 int pixel_idx = __ldg(&d_shadow_queue.pixel_idx[queue_index]);
                 float4 rad = __ldg(&d_shadow_queue.radiance[queue_index]);
-                AtomicAddVec3(&d_image[pixel_idx], MakeVec3(rad));
+                AtomicAddVec3(&d_direct_image[pixel_idx], MakeVec3(rad));
             }
         }
     }
@@ -226,7 +226,7 @@ namespace pathtrace_wavefront {
         TraceShadowRayKernel << <numBlocks, blockSize >> > (
             pState->d_shadow_queue,
             num_active_rays,
-            pState->d_image,
+            pState->d_direct_image,
             pState->d_mesh_data,
             pState->d_bvh_data
             );

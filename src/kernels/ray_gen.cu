@@ -3,92 +3,131 @@
 #include <cuda.h>
 #include "glm/glm.hpp"
 #include "cuda_utilities.h"
-#include "rng.h"           // 包含 wang_hash, rand_float
+#include <glm/gtc/matrix_transform.hpp>
+#include "rng.h"
 
+// 方便的宏定义
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define CHECK_CUDA_ERROR(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
 
 namespace pathtrace_wavefront {
-    // 相机光线生成 Kernel
+
     static __global__ void GenerateCameraRaysKernel(
         Camera cam,
         int trace_depth,
         int iter,
         PathState d_path_state,
-        int* d_new_path_queue, int new_path_count,
-        int* d_extension_ray_queue, int* d_extension_ray_counter,
-        int* d_global_ray_counter,
+        int* d_extension_ray_queue,
         int total_pixels,
-        int* d_sample_count)
+        bool is_jitter
+        // [移除] float2 jitter_offset 参数不再需要，改为内部生成
+    )
     {
-        int queue_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+        // 1. 计算全局像素索引
+        int idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+        if (idx >= total_pixels) return;
 
-        if (queue_index < new_path_count) {
-            // 1. 获取任务槽位
-            int path_slot_id = d_new_path_queue[queue_index];
+        int pixel_idx = idx;
+        int path_slot_id = pixel_idx;
 
-            // 2. 索取全局光线任务 ID (对应屏幕像素)
-            int global_job_id = DispatchPathIndex(d_global_ray_counter);
+        // 绑定 Pixel ID
+        d_path_state.pixel_idx[path_slot_id] = pixel_idx;
 
-            int pixel_idx = global_job_id % total_pixels;
-            int sample_idx = global_job_id / total_pixels; // 当前是该像素的第几次采样
+        // 2. 计算屏幕坐标 (x, y)
+        int x = pixel_idx % cam.resolution.x;
+        int y = pixel_idx / cam.resolution.x;
 
-            // 增加采样计数
-            atomicAdd(&d_sample_count[pixel_idx], 1);
+        // 3. 初始化随机种子 (使用 Wang Hash)
+        unsigned int seed = wang_hash((pixel_idx * 19990303) + iter * 719393);
+        if (seed == 0) seed = 1;
 
-            d_path_state.pixel_idx[path_slot_id] = pixel_idx;
+        // 4. 计算 Jitter (随机亚像素抖动)
+        float jitterX = 0.0f;
+        float jitterY = 0.0f;
 
-            int x = pixel_idx % cam.resolution.x;
-            int y = pixel_idx / cam.resolution.x;
+        if (is_jitter) {
+            // 生成 jitterX
+            seed = wang_hash(seed); // 再次哈希更新种子
+            // 将 uint 映射到 [0, 1) float，然后移位到 [-0.5, 0.5]
+            jitterX = ((float)seed / 4294967296.0f) - 0.5f;
 
-            // 3. 生成随机种子 & Jitter
-            unsigned int seed = wang_hash((sample_idx * 19990303) + pixel_idx + iter * 719393);
-            if (seed == 0) seed = 1;
-            float jitterX = rand_float(seed) - 0.5f;
-            float jitterY = rand_float(seed) - 0.5f;
-
-            // 4. 计算相机光线方向
-            glm::vec3 dir = glm::normalize(cam.view
-                - cam.right * cam.pixelLength.x * ((float)x + jitterX - (float)cam.resolution.x * 0.5f)
-                - cam.up * cam.pixelLength.y * ((float)y + jitterY - (float)cam.resolution.y * 0.5f)
-            );
-
-            // 5. 初始化路径状态
-            d_path_state.ray_ori[path_slot_id] = make_float4(cam.position.x, cam.position.y, cam.position.z, 0.0f);
-            d_path_state.ray_dir_dist[path_slot_id] = make_float4(dir.x, dir.y, dir.z, FLT_MAX);
-            d_path_state.hit_geom_id[path_slot_id] = -1;
-            d_path_state.material_id[path_slot_id] = -1;
-            d_path_state.throughput_pdf[path_slot_id] = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
-            d_path_state.remaining_bounces[path_slot_id] = trace_depth;
-            d_path_state.rng_state[path_slot_id] = seed;
-
-            // 6. 加入 Extension Queue 准备进行第一次求交
-            int extension_path_idx = DispatchPathIndex(d_extension_ray_counter);
-            d_extension_ray_queue[extension_path_idx] = path_slot_id;
+            // 生成 jitterY
+            seed = wang_hash(seed); // 再次哈希更新种子
+            jitterY = ((float)seed / 4294967296.0f) - 0.5f;
         }
+
+        // 5. 生成光线方向 (Pinhole Camera Model)
+        glm::vec3 dir = glm::normalize(cam.view
+            + cam.right * cam.pixelLength.x * ((float)x + jitterX - (float)cam.resolution.x * 0.5f)
+            - cam.up * cam.pixelLength.y * ((float)y + jitterY - (float)cam.resolution.y * 0.5f)
+        );
+
+        // 6. 初始化 PathState
+        d_path_state.ray_ori[path_slot_id] = make_float4(cam.position.x, cam.position.y, cam.position.z, 0.0f);
+        d_path_state.ray_dir_dist[path_slot_id] = make_float4(dir.x, dir.y, dir.z, FLT_MAX);
+
+        d_path_state.hit_geom_id[path_slot_id] = -1;
+        d_path_state.material_id[path_slot_id] = -1;
+
+        d_path_state.throughput_pdf[path_slot_id] = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+        d_path_state.remaining_bounces[path_slot_id] = trace_depth;
+
+        d_path_state.rng_state[path_slot_id] = seed;
+
+        // 7. 加入队列
+        d_extension_ray_queue[pixel_idx] = path_slot_id;
     }
 
     namespace ray_gen {
-        void GenerateCameraRays(const Camera& cam, int trace_depth, int iter, int total_pixels, const WavefrontPathTracerState* pState) {
-            int num_new_paths = 0;
-            // 从 Device 获取当前需要生成的路径数量 (即上一帧结束后的空闲路径 + 初始化时的所有路径)
-            cudaMemcpy(&num_new_paths, pState->d_new_path_counter, sizeof(int), cudaMemcpyDeviceToHost);
 
-            if (num_new_paths > 0) {
-                int bs = 128;
-                int nb = (num_new_paths + bs - 1) / bs;
+        // Host: 生成光线入口函数
+        void GenerateCameraRays(
+            const Camera& cam,
+            int trace_depth,
+            int iter,
+            int total_pixels,
+            WavefrontPathTracerState* pState,
+            bool is_jitter)
+        {
+            float aspect_ratio = float(cam.resolution.x) / float(cam.resolution.y);
+            glm::mat4 current_view = glm::lookAt(cam.position, cam.lookAt, cam.up);
+            glm::mat4 current_proj = glm::perspective(
+                glm::radians(cam.fov.y),
+                aspect_ratio,
+                0.1f,
+                1000.0f
+            );
+            glm::mat4 view_proj_mat = current_proj * current_view;
 
-                GenerateCameraRaysKernel << <nb, bs >> > (
-                    cam, trace_depth, iter,
-                    pState->d_path_state,
-                    pState->d_new_path_queue, num_new_paths,
-                    pState->d_extension_ray_queue, pState->d_extension_ray_counter,
-                    pState->d_global_ray_counter,
-                    total_pixels,
-                    pState->d_pixel_sample_count
-                    );
-                CHECK_CUDA_ERROR("ray_gen::GenerateCameraRays");
-            }
+            // 更新view proj矩阵
+            pState->view_proj_mat = view_proj_mat;
+
+            int bs = 128;
+            int nb = (total_pixels + bs - 1) / bs;
+
+            GenerateCameraRaysKernel << <nb, bs >> > (
+                cam,
+                trace_depth,
+                iter,
+                pState->d_path_state,
+                pState->d_extension_ray_queue,
+                total_pixels,
+                is_jitter
+                );
+
+            CHECK_CUDA_ERROR("ray_gen::GenerateCameraRaysKernel");
+
+            // 4. 重置计数器
+            int rays_generated = total_pixels;
+            int shadow_queue = 0;
+            cudaMemcpy(pState->d_extension_ray_counter, &rays_generated, sizeof(int), cudaMemcpyHostToDevice);
+            cudaMemcpy(pState->d_shadow_queue_counter, &shadow_queue, sizeof(int), cudaMemcpyHostToDevice);
+            CHECK_CUDA_ERROR("ray_gen::UpdateCounter");
+        }
+
+        // 正常的路径追踪 (Color Pass)：开启 Jitter
+        void GeneratePathTracingRays(const Camera& cam, int trace_depth, int iter, int total_pixels, WavefrontPathTracerState* pState) {
+            GenerateCameraRays(cam, trace_depth, iter, total_pixels, pState, true);
         }
     }
 }

@@ -18,6 +18,20 @@ __forceinline__ __device__ void AtomicAddVec3(glm::vec3* address, glm::vec3 val)
     atomicAdd(&(address->z), val.z);
 }
 
+ __device__ inline float dot(const float3& a, const float3& b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+__device__ inline float4 lerp(float4 a, float4 b, float t) {
+    return make_float4(
+        a.x + t * (b.x - a.x),
+        a.y + t * (b.y - a.y),
+        a.z + t * (b.z - a.z),
+        a.w + t * (b.w - a.w)
+    );
+}
+
 __device__ __forceinline__ glm::vec3 MakeVec3(const float4& f) {
     return glm::vec3(f.x, f.y, f.z);
 }
@@ -123,6 +137,31 @@ __host__ __device__ __forceinline__ float4 operator*(const float4& a, const floa
     return make_float4(a.x * b, a.y * b, a.z * b, a.w * b);
 }
 
+__host__ __device__ inline float4 operator*(const float& b, const float4& a) {
+    return make_float4(a.x * b, a.y * b, a.z * b, a.w * b);
+}
+
+__host__ __device__ inline void operator+=(float4& a, float4 b) {
+    a.x += b.x;
+    a.y += b.y;
+    a.z += b.z;
+    a.w += b.w;
+}
+
+__host__ __device__ inline void operator*=(float4& a, const float4& b) {
+    a.x *= b.x;
+    a.y *= b.y;
+    a.z *= b.z;
+    a.w *= b.w;
+}
+
+__host__ __device__ inline void operator*=(float4& a, const float& b) {
+    a.x *= b;
+    a.y *= b;
+    a.z *= b;
+    a.w *= b;
+}
+
 __host__ __device__ __forceinline__ float4 operator/(const float4& a, const float& b) {
     return make_float4(a.x / b, a.y / b, a.z / b, a.w / b);
 }
@@ -197,13 +236,25 @@ __device__ __forceinline__ void UpdatePathState(
     int trace_depth, unsigned int seed,
     glm::vec3 throughput, glm::vec3 attenuation,
     glm::vec3 intersect_point, glm::vec3 Ng,
-    glm::vec3 next_dir, float next_pdf)
+    glm::vec3 next_dir, float next_pdf, bool is_specular_transmission)
 {
     if (next_pdf > 0.0f && glm::length(attenuation) > 0.0f) {
         throughput *= attenuation;
 
-        bool is_reflect = glm::dot(next_dir, Ng) > 0.0f;
-        glm::vec3 bias_n = is_reflect ? Ng : -Ng;
+        glm::vec3 bias_n = Ng;
+
+        if (is_specular_transmission) {
+            bool exiting = glm::dot(next_dir, Ng) > 0.0f;
+            bias_n = exiting ? Ng : -Ng;
+        }
+        else {
+            if (glm::dot(next_dir, Ng) <= 0.0f) 
+            { 
+                d_path_state.remaining_bounces[idx] = -1; 
+                d_path_state.rng_state[idx] = seed;
+                return; 
+            }
+        }
 
         d_path_state.throughput_pdf[idx] = make_float4(throughput.x, throughput.y, throughput.z, next_pdf);
 
@@ -227,7 +278,7 @@ __device__ __forceinline__ void UpdatePathState(
 
 __device__ __forceinline__ void GetSurfaceProperties(
     const MeshData& mesh_data,
-    const cudaTextureObject_t* textures, // <--- 新增：传入当前文件的常量纹理数组
+    const cudaTextureObject_t* textures, 
     int prim_id,
     float u,
     float v,
@@ -248,19 +299,19 @@ __device__ __forceinline__ void GetSurfaceProperties(
     glm::vec3 n0 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.x]));
     glm::vec3 n1 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.y]));
     glm::vec3 n2 = MakeVec3(__ldg(&mesh_data.nor[idx_mat.z]));
-    glm::vec3 N_geom = glm::normalize(w * n0 + u * n1 + v * n2);
+    glm::vec3 N_shading = glm::normalize(w * n0 + u * n1 + v * n2);
 
     // Normal Map Handling
     if (mat.normal_tex_id < 0) {
-        out_N = N_geom;
+        out_N = N_shading;
     }
     else {
         glm::vec3 tan1 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.x]));
         glm::vec3 tan2 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.y]));
         glm::vec3 tan3 = MakeVec3(__ldg(&mesh_data.tangent[idx_mat.z]));
         glm::vec3 T_interp = w * tan1 + u * tan2 + v * tan3;
-        glm::vec3 B = glm::normalize(glm::cross(N_geom, T_interp));
-        glm::vec3 T = glm::cross(B, N_geom);
+        glm::vec3 B = glm::normalize(glm::cross(N_shading, T_interp));
+        glm::vec3 T = glm::cross(B, N_shading);
 
         // 使用传入的 textures 指针
         float4 normal_sample = tex2D<float4>(textures[mat.normal_tex_id], out_uv.x, out_uv.y);
@@ -270,7 +321,7 @@ __device__ __forceinline__ void GetSurfaceProperties(
             normal_sample.y * 2.0f - 1.0f,
             normal_sample.z * 2.0f - 1.0f
         );
-        out_N = glm::normalize(glm::mat3(T, B, N_geom) * mapped_normal);
+        out_N = glm::normalize(glm::mat3(T, B, N_shading) * mapped_normal);
     }
 }
 

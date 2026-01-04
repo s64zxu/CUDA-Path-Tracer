@@ -28,7 +28,7 @@ __device__ __noinline__ float TriangleIntersectionTest(
     if (out_v < 0.0f || (out_u + out_v) > 1.0f) return -1.0f;
 
     float t = glm::dot(edge2, qvec) * invDet;
-    return (t > EPSILON) ? t : -1.0f;
+    return (t > 1e-7f) ? t : -1.0f;
 }
 
 __device__ __noinline__ float BoudingboxIntersetionTest(

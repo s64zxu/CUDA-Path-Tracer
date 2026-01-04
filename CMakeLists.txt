@@ -73,6 +73,7 @@ set(headers
     src/kernels/ray_gen.h
     src/optix/optix_structs.h
     src/optix/optix_ray_cast.h
+    src/kernels/svgf.h
 )
 
 set(sources
@@ -97,6 +98,7 @@ set(sources
     src/kernels/ray_gen.cu
     src/optix/optix_ray_cast.cu
     src/optix/optix_kernels.cu
+    src/kernels/svgf.cu
 )
 
 set(imgui_headers

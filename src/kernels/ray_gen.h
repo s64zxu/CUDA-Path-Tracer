@@ -5,14 +5,7 @@
 
 namespace pathtrace_wavefront {
     namespace ray_gen {
-        // 生成相机光线 (Generation Stage)
-        void GenerateCameraRays(
-            const Camera& cam,
-            int trace_depth,
-            int iter,
-            int total_pixels,
-            const WavefrontPathTracerState* pState
-        );
-
+        // 正常的路径追踪光线生成 (带 Jitter)
+        void GeneratePathTracingRays(const Camera& cam, int trace_depth, int iter, int total_pixels, WavefrontPathTracerState* pState);
     } // namespace ray_gen
 } // namespace pathtrace_wavefront

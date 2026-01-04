@@ -25,3 +25,14 @@ __host__ __device__ inline float rand_float(unsigned int& state) {
     // 4294967296.0f ÊÇ 2^32
     return state * 2.3283064365386963e-10f;
 }
+
+__host__ __device__ inline float halton(int index, int base) {
+    float f = 1.0f;
+    float r = 0.0f;
+    while (index > 0) {
+        f = f / (float)base;
+        r = r + f * (float)(index % base);
+        index = index / base;
+    }
+    return r;
+}

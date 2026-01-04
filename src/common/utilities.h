@@ -16,16 +16,31 @@
 #define INV_PI 0.31830988618f
 #define INV_TWO_PI 0.15915494309189533577f
 #define PDF_DIRAC_DELTA 1e10f
-#define RRDEPTH 3
-#define MAX_GEOMS 64 // 存储的几何体数量，用于初始化常量内存
-#define NUM_PATHS (1<<20)
+#define MAX_GEOMS 64 
+
+enum DisplayMode {
+    DISPLAY_RESULT = 0,    // 最终合成结果 (受 SVGF 开关控制)
+    DISPLAY_NORMAL = 1,    // 法线通道
+    DISPLAY_DEPTH = 2,     // 深度通道
+    DISPLAY_ALBEDO = 3,    // 基础色通道
+    DISPLAY_MOTION_VECTOR = 4 // 运动矢量通道
+};
 
 class GuiDataContainer
 {
 public:
-    GuiDataContainer() : TracedDepth(0), MraysPerSec(0.0f) {}
+    GuiDataContainer() :
+        TracedDepth(0),
+        MraysPerSec(0.0f),
+        DenoiserOn(true), // 默认开启
+        SelectedDisplayMode(DISPLAY_RESULT)
+    {
+    }
+
     int TracedDepth;
     float MraysPerSec;
+    bool DenoiserOn;
+    int SelectedDisplayMode;
 };
 
 namespace utilityCore
@@ -37,5 +52,5 @@ namespace utilityCore
     extern std::vector<std::string> tokenizeString(std::string str);
     extern glm::mat4 buildTransformationMatrix(glm::vec3 translation, glm::vec3 rotation, glm::vec3 scale);
     extern std::string convertIntToString(int number);
-    extern std::istream& safeGetline(std::istream& is, std::string& t); //Thanks to http://stackoverflow.com/a/6089413
+    extern std::istream& safeGetline(std::istream& is, std::string& t);
 }

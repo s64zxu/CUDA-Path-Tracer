@@ -435,16 +435,7 @@ namespace pathtrace_megakernel
             ray.direction = next_dir;
 
             // --- Russian Roulette ---
-            if (depth > RRDEPTH) {
-                float maxChan = max(throughput.r, max(throughput.g, throughput.b));
-                maxChan = glm::clamp(maxChan, 0.0f, 1.0f);
-                if (rand_float(seed) < maxChan) {
-                    throughput /= maxChan;
-                }
-                else {
-                    active = false;
-                }
-            }
+            
         }
 
         // Stats & Write Result

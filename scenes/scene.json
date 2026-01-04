@@ -1,6 +1,6 @@
 {
   "Camera": {
-    "RES": [ 800, 600 ],
+    "RES": [ 1920, 1080 ],
     "FOVY": 45.0,
     "ITERATIONS": 5000,
     "DEPTH": 8,
@@ -16,8 +16,14 @@
     {
       "TRANS": [ 0, 0, 0 ],
       "ROTAT": [ 0, 0, 0 ],
-      "SCALE": [ 30, 30, 30 ],
-      "FILE": "../scenes/fireplace_room/fireplace_room.obj"
+      "SCALE": [ 60, 60, 60 ],
+      "FILE": "../scenes/CornellBox/CornellBox-Sphere.obj"
+    },
+    {
+      "TRANS": [ 0, 30, 0 ],
+      "ROTAT": [ 0, 0, 0 ],
+      "SCALE": [ 0.5, 0.5, 0.5 ],
+      "FILE": "../scenes/light_cube.obj"
     }
   ]
 }

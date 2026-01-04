@@ -319,7 +319,7 @@ void OptixRayCast::TraceShadowRay(int num_active_rays, const WavefrontPathTracer
     p.shadow_ray_queue = pState->d_shadow_queue;
     p.shadow_ray_counter = num_active_rays;
     p.handle = accel_handle;
-    p.image = pState->d_image;
+    p.image = pState->d_direct_image;
 
     if (d_params == 0) {
         cudaMalloc(reinterpret_cast<void**>(&d_params), sizeof(Params));

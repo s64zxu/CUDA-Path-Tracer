@@ -19,14 +19,14 @@ namespace pathtrace_wavefront {
     void PathtraceInit(Scene* scene);
     void Pathtrace(uchar4* pbo, int frame, int iter);
     void PathtraceFree();
-    void InitDataContainer(GuiDataContainer* guiData); // 【关键】声明 UI 数据绑定函数
+    void InitDataContainer(GuiDataContainer* guiData);
 }
 
 namespace pathtrace_megakernel {
     void PathtraceInit(Scene* scene);
     void Pathtrace(uchar4* pbo, int frame, int iter);
     void PathtraceFree();
-    void InitDataContainer(GuiDataContainer* guiData); // 【关键】声明 UI 数据绑定函数
+    void InitDataContainer(GuiDataContainer* guiData); 
 }
 
 // 包装初始化
@@ -241,13 +241,22 @@ void saveImage()
     float samples = iteration;
     Image img(width, height);
 
+    // 定义 Gamma 值，标准显示器通常为 2.2
+    const float gamma = 2.2f;
+    const float invGamma = 1.0f / gamma;
+
     for (int x = 0; x < width; x++)
     {
         for (int y = 0; y < height; y++)
         {
             int index = x + (y * width);
-            glm::vec3 pix = renderState->image[index];
-            img.setPixel(width - 1 - x, y, glm::vec3(pix) / samples);
+
+            glm::vec3 linearColor = renderState->image[index] / samples;
+            glm::vec3 correctedColor;
+            correctedColor.r = std::pow(std::max(0.0f, linearColor.r), invGamma);
+            correctedColor.g = std::pow(std::max(0.0f, linearColor.g), invGamma);
+            correctedColor.b = std::pow(std::max(0.0f, linearColor.b), invGamma);
+            img.setPixel(width - 1 - x, y, correctedColor);
         }
     }
 
@@ -268,8 +277,8 @@ void processInput(GLFWwindow* window)
 
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) { cameraPosition += moveSpeed * cam.view; moved = true; }
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { cameraPosition -= moveSpeed * cam.view; moved = true; }
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { cameraPosition -= moveSpeed * cam.right; moved = true; }
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { cameraPosition += moveSpeed * cam.right; moved = true; }
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { cameraPosition += moveSpeed * cam.right; moved = true; }
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { cameraPosition -= moveSpeed * cam.right; moved = true; }
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) { cameraPosition += moveSpeed * glm::vec3(0.0f, 1.0f, 0.0f); moved = true; }
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) { cameraPosition -= moveSpeed * glm::vec3(0.0f, 1.0f, 0.0f); moved = true; }
 
@@ -355,12 +364,11 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
                 printf("\"EYE\": [%.4f, %.4f, %.4f],\n",
                     cam.position.x, cam.position.y, cam.position.z);
                 printf("\"LOOKAT\": [%.4f, %.4f, %.4f],\n",
-                    cam.lookAt.x, cam.lookAt.y, cam.lookAt.z); // 注意：这里的 lookAt 是初始看向的点，动态漫游后你可能更关心 view 向量
+                    cam.lookAt.x, cam.lookAt.y, cam.lookAt.z); 
                 printf("\"UP\": [%.4f, %.4f, %.4f],\n",
                     cam.up.x, cam.up.y, cam.up.z);
                 printf("\"FOVY\": %.2f\n", cam.fov.y);
 
-                // 计算当前的 LookAt 点 (Position + View Direction)
                 glm::vec3 currentLookAt = cam.position + cam.view;
                 printf("Calculated LookAt (Pos + View): [%.4f, %.4f, %.4f]\n",
                     currentLookAt.x, currentLookAt.y, currentLookAt.z);
@@ -390,7 +398,7 @@ void mousePositionCallback(GLFWwindow* window, double xpos, double ypos)
         lastX = xpos; lastY = ypos;
         xoffset *= mouseSensitivity;
         yoffset *= mouseSensitivity;
-        yaw += xoffset;
+        yaw -= xoffset;
         pitch += yoffset;
         if (pitch > 89.0f) pitch = 89.0f;
         if (pitch < -89.0f) pitch = -89.0f;

@@ -557,9 +557,9 @@ void Scene::loadCamera(const json& cameraData) {
     camera.lookAt = glm::vec3(lookat[0], lookat[1], lookat[2]);
     camera.up = glm::vec3(up[0], up[1], up[2]);
 
-    float yscaled = tan(fovy * (PI / 180.0f));
+    float yscaled = tanf((fovy * 0.5f) * (PI / 180.0f));
     float xscaled = (yscaled * camera.resolution.x) / camera.resolution.y;
-    float fovx = (atan(xscaled) * 180.0f) / PI;
+    float fovx = (atanf(xscaled) * 180.0f / PI) * 2.0f;
     camera.fov = glm::vec2(fovx, fovy);
 
     camera.view = glm::normalize(camera.lookAt - camera.position);

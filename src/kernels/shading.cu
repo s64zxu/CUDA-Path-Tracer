@@ -43,8 +43,14 @@ namespace pathtrace_wavefront {
         glm::vec3 wi = glm::normalize(light_sample_pos - intersect_point);
         float dist = glm::distance(light_sample_pos, intersect_point);
         float distSQ = glm::max(0.000001f, dist*dist);
+
         float cosThetaSurf = max(glm::dot(N, wi), 0.0f);
         float cosThetaLight = max(glm::dot(light_N, -wi), 0.0f);
+
+        // 使用几何法线剔除命中背面的光线
+        if (glm::dot(Ng, wi) <= 0.0f) {
+            return;
+        }
 
         if (cosThetaSurf > 0.0f && cosThetaLight > 0.0f && pdf_light_area > 0.0f) {
 
@@ -67,7 +73,7 @@ namespace pathtrace_wavefront {
                         intersect_point.x + Ng.x * EPSILON,
                         intersect_point.y + Ng.y * EPSILON,
                         intersect_point.z + Ng.z * EPSILON,
-                        dist - 2.0f * EPSILON);
+                        dist);
 
                     d_shadow_queue.ray_dir[shadow_idx] = make_float4(wi.x, wi.y, wi.z, 0.0f);
                     d_shadow_queue.radiance[shadow_idx] = make_float4(L_potential.x, L_potential.y, L_potential.z, 0.0f);
@@ -113,6 +119,7 @@ namespace pathtrace_wavefront {
             glm::vec3 intersect_point = MakeVec3(ori_pad) + MakeVec3(dir_dist) * dir_dist.w;
             glm::vec3 wo = -MakeVec3(dir_dist);
             glm::vec3 Ng = MakeVec3(__ldg(&d_mesh_data.nor_geom[prim_id]));
+            // 几何法线始终在观察方向所在半球
             if (glm::dot(Ng, wo) < 0.0f) Ng = -Ng;
 
             unsigned int local_seed = d_path_state.rng_state[idx];
@@ -123,7 +130,10 @@ namespace pathtrace_wavefront {
             glm::vec3 next_dir; float next_pdf = 0.0f;
             glm::vec3 attenuation = samplePBR(wo, next_dir, next_pdf, N, material, local_seed);
 
-            UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed, throughput, attenuation, intersect_point, Ng, next_dir, next_pdf);
+            UpdatePathState(d_path_state, idx, 
+                d_extension_ray_queue, d_extension_ray_counter, 
+                trace_depth, local_seed, throughput, attenuation, intersect_point, 
+                Ng, next_dir, next_pdf, false);
         }
     }
 
@@ -166,7 +176,10 @@ namespace pathtrace_wavefront {
             glm::vec3 next_dir; float next_pdf = 0.0f;
             glm::vec3 attenuation = sampleDiffuse(wo, next_dir, next_pdf, N, material, local_seed);
 
-            UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed, throughput, attenuation, intersect_point, Ng, next_dir, next_pdf);
+            UpdatePathState(d_path_state, idx, 
+                d_extension_ray_queue, d_extension_ray_counter, 
+                trace_depth, local_seed, throughput, attenuation, intersect_point, 
+                Ng, next_dir, next_pdf, false);
         }
     }
 
@@ -194,6 +207,7 @@ namespace pathtrace_wavefront {
             glm::vec3 intersect_point = MakeVec3(ori_pad) + MakeVec3(dir_dist) * dir_dist.w;
             glm::vec3 wo = -MakeVec3(dir_dist);
             glm::vec3 Ng = MakeVec3(__ldg(&d_mesh_data.nor_geom[prim_id]));
+            if (glm::dot(Ng, wo) < 0.0f) Ng = -Ng;
 
             unsigned int local_seed = d_path_state.rng_state[idx];
             glm::vec3 throughput = MakeVec3(tp_pdf);
@@ -201,7 +215,9 @@ namespace pathtrace_wavefront {
             glm::vec3 next_dir; float next_pdf = 0.0f;
             glm::vec3 attenuation = sampleSpecularReflection(wo, next_dir, next_pdf, N, material);
 
-            UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed, throughput, attenuation, intersect_point, Ng, next_dir, next_pdf);
+            UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, 
+                trace_depth, local_seed, throughput, attenuation, intersect_point, 
+                Ng, next_dir, next_pdf, false);
         }
     }
 
@@ -236,7 +252,9 @@ namespace pathtrace_wavefront {
             glm::vec3 next_dir; float next_pdf = 0.0f;
             glm::vec3 attenuation = sampleSpecularRefraction(wo, next_dir, next_pdf, N, material, local_seed);
 
-            UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, trace_depth, local_seed, throughput, attenuation, intersect_point, Ng, next_dir, next_pdf);
+            UpdatePathState(d_path_state, idx, d_extension_ray_queue, d_extension_ray_counter, 
+                trace_depth, local_seed, throughput, attenuation, intersect_point, 
+                Ng, next_dir, next_pdf, true);
         }
     }
 

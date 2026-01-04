@@ -20,7 +20,7 @@ extern "C" __global__ void __raygen__extension()
 
     optixTrace(
         params.handle, origin, dir,
-        0.00001f, 1e16f, 0.0f, // tmin, tmax, time
+        0.0f, 1e16f, 0.0f, // tmin, tmax, time
         OptixVisibilityMask(1), 
         OPTIX_RAY_FLAG_DISABLE_ANYHIT, // anyhit仅用于alpha test
         0, 2, 0, // SBT info   todo: why 0 2 0
@@ -65,19 +65,19 @@ extern "C" __global__ void __raygen__shadow()
     float tmax = origin_tmax.w;
     float3 dir = MakeFloat3(params.shadow_ray_queue.ray_dir[queue_index]);
     uint32_t is_occluded = 0;
+    uint32_t dummy_payload = 0;
 
     optixTrace(
         params.handle,
         origin, dir,
-        0.0001f, tmax - 0.0001f, 0.0f, // epsilon 处理
+        0.0f, tmax - 0.00001f, 0.0f, // epsilon 处理
         OptixVisibilityMask(1),
         OPTIX_RAY_FLAG_DISABLE_ANYHIT,
         1, 2, 1, // SBT Offset 1
-        is_occluded
+        is_occluded, dummy_payload
     );
     if (!is_occluded)
     {
-        // 结果写入不需要 LDG，且为 Atomic 操作
         int pixel_idx = __ldg(&params.shadow_ray_queue.pixel_idx[queue_index]);
         float4 rad = __ldg(&params.shadow_ray_queue.radiance[queue_index]);
         AtomicAddVec3(&params.image[pixel_idx], MakeVec3(rad));
