@@ -154,6 +154,11 @@ void RenderImGui()
         ImGui::Checkbox("Enable SVGF Denoiser", &imguiData->DenoiserOn);
     }
 
+    // BVH可视化
+    if (imguiData != nullptr) {
+        ImGui::Checkbox("Show BVH Heatmap", &imguiData->ShowBVH);
+    }
+
     // 显示模式切换
     const char* modes[] = { "Final Result", "Normals", "Depth", "Albedo", "Motion Vec" };
     if (imguiData != nullptr) {

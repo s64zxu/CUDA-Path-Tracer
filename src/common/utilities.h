@@ -41,6 +41,7 @@ public:
     float MraysPerSec;
     bool DenoiserOn;
     int SelectedDisplayMode;
+    bool ShowBVH;
 };
 
 namespace utilityCore

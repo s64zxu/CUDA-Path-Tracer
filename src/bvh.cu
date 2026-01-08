@@ -8,6 +8,7 @@
 #include <stack>
 #include <set>
 #include <cstdio>
+#include "intersections.h"
 
 __global__ void ComputeAABB(LBVHData d_bvh_data, MeshData d_mesh_data)
 {
@@ -282,137 +283,11 @@ __global__ void BuildEscapeIdx(LBVHData d_bvh_data, MeshData d_mesh_data)
     d_bvh_data.escape_indices[right_child] = escape;
 }
 
-// DEBUG函数
-void DebugPrintBVH(const LBVHData& d_bvh, int num_triangles) {
-    if (num_triangles == 0) return;
 
-    int N = num_triangles;
-    int num_internal = N - 1;
-
-    // !!! 修正点 1: 内存空间必须覆盖到索引 2N-1，所以大小需要是 2N
-    // 布局: [Internal: 0 ~ N-2] [Gap: N-1] [Leaf: N ~ 2N-1]
-    int buffer_size = 2 * N;
-
-    // 1. 将数据从 GPU 下载到 CPU
-    // child_nodes 只存在于内部节点 (0 ~ N-2)
-    std::vector<int2> h_children(num_internal);
-
-    // parent, aabb 覆盖所有节点 (包括 Gap 和 Leaves)
-    std::vector<int> h_parent(buffer_size);
-    std::vector<float4> h_aabb_min(buffer_size);
-    std::vector<float4> h_aabb_max(buffer_size);
-
-    // 拷贝内部节点的孩子信息
-    cudaMemcpy(h_children.data(), d_bvh.child_nodes, sizeof(int2) * num_internal, cudaMemcpyDeviceToHost);
-
-    // 拷贝所有节点的属性 (注意这里拷贝大小用 buffer_size)
-    cudaMemcpy(h_parent.data(), d_bvh.parent, sizeof(int) * buffer_size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_aabb_min.data(), d_bvh.aabb_min, sizeof(float4) * buffer_size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_aabb_max.data(), d_bvh.aabb_max, sizeof(float4) * buffer_size, cudaMemcpyDeviceToHost);
-
-    printf("\n=== BVH Topology Dump (Fixed Layout) ===\n");
-    printf("Total Primitives (N): %d\n", N);
-    printf("Internal Nodes range: [0, %d]\n", num_internal - 1);
-    printf("Gap Index (Unused)  : %d\n", N - 1);
-    printf("Leaf Nodes range    : [%d, %d]\n", N, 2 * N - 1);
-    printf("Root Node           : 0\n\n");
-
-    // 2. 递归打印 (DFS)
-    auto printNode = [&](auto&& self, int nodeIdx, int depth) -> void {
-        std::string indent(depth * 2, ' ');
-
-        // 解码索引 (处理 ~ 符号，虽然在这个布局下通常不需要，但为了兼容你的逻辑保留)
-        int realIdx = (nodeIdx < 0) ? ~nodeIdx : nodeIdx;
-
-        // !!! 修正点 2: 判断叶子的逻辑
-        // 在这种布局下，如果索引 >= N，肯定是叶子
-        bool isLeaf = realIdx >= N;
-
-        // 安全检查
-        if (realIdx >= buffer_size) {
-            printf("%s[Error] Index %d out of bounds!\n", indent.c_str(), realIdx);
-            return;
-        }
-
-        float4 min = h_aabb_min[realIdx];
-        float4 max = h_aabb_max[realIdx];
-
-        if (isLeaf) {
-            // 如果是叶子，通常想知道它对应哪个三角形
-            // 在这种布局中，通常 Leaf Index = N + Primitive Index (Morton Sorted)
-            int primitiveIdx = realIdx - N;
-            printf("%s[L] Node %d (Prim %d): Bounds[(%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f)] Parent: %d\n",
-                indent.c_str(), realIdx, primitiveIdx,
-                min.x, min.y, min.z, max.x, max.y, max.z,
-                h_parent[realIdx]);
-        }
-        else {
-            // 内部节点
-            printf("%s[I] Node %d: Bounds[(%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f)] Parent: %d\n",
-                indent.c_str(), realIdx,
-                min.x, min.y, min.z, max.x, max.y, max.z,
-                h_parent[realIdx]);
-
-            // 读取子节点
-            int left = h_children[realIdx].x;
-            int right = h_children[realIdx].y;
-
-            int left_decoded = (left < 0) ? ~left : left;
-            int right_decoded = (right < 0) ? ~right : right;
-
-            self(self, left_decoded, depth + 1);
-            self(self, right_decoded, depth + 1);
-        }
-        };
-
-    // 从根节点 0 开始
-    printNode(printNode, 0, 0);
-    printf("\n=========================\n");
-}
-// 打印所有叶子节点的详细信息
-void TestPrintLeafNodes(const LBVHData& d_bvh, int num_triangles) {
-    if (num_triangles == 0) return;
-
-    int N = num_triangles;
-    // 根据你的逻辑，叶子节点从索引 N 开始，到 2N-1 结束
-    int buffer_size = 2 * N;
-
-    // 1. 在 CPU 上分配临时内存
-    std::vector<float4> h_aabb_min(buffer_size);
-    std::vector<float4> h_aabb_max(buffer_size);
-    std::vector<int> h_prim_indices(buffer_size);
-
-    // 2. 将数据从 GPU 拷贝到 CPU
-    // 尽管我们只需要后半部分，但为了索引方便，通常拷贝整个 buffer
-    cudaMemcpy(h_aabb_min.data(), d_bvh.aabb_min, sizeof(float4) * buffer_size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_aabb_max.data(), d_bvh.aabb_max, sizeof(float4) * buffer_size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_prim_indices.data(), d_bvh.primitive_indices, sizeof(int) * buffer_size, cudaMemcpyDeviceToHost);
-
-    printf("\n\n====== [TEST] Leaf Nodes Data Dump ======\n");
-    printf("Leaf Node Range: [%d, %d]\n", N, 2 * N - 1);
-    printf("%-12s | %-12s | %-38s | %-38s\n", "Node Index", "Prim Index", "AABB Min (x, y, z)", "AABB Max (x, y, z)");
-    printf("------------------------------------------------------------------------------------------------------------\n");
-
-    // 3. 遍历叶子节点范围 [N, 2N-1]
-    for (int i = 0; i < N; ++i) {
-        int leaf_idx = N + i; // 真正的数组索引
-
-        int prim_idx = h_prim_indices[leaf_idx]; // 原始三角形的索引
-        float4 min_v = h_aabb_min[leaf_idx];
-        float4 max_v = h_aabb_max[leaf_idx];
-
-        printf("%-12d | %-12d | (%8.3f, %8.3f, %8.3f)   | (%8.3f, %8.3f, %8.3f)\n",
-            leaf_idx,
-            prim_idx,
-            min_v.x, min_v.y, min_v.z,
-            max_v.x, max_v.y, max_v.z
-        );
-    }
-    printf("=========================================\n\n");
-}
 int DecodeIndex(int idx) {
     return (idx < 0) ? ~idx : idx;
 }
+
 void TestHierarchyLogic(const LBVHData& d_bvh, int num_triangles) {
     if (num_triangles < 2) {
         printf("[TestHierarchy] Too few triangles to build a tree.\n");
@@ -638,4 +513,129 @@ void BuildLBVH(LBVHData& d_bvh_data, const MeshData& d_mesh_data)
     TestHierarchyLogic(d_bvh_data, num_triangles);
 
     cudaFree(d_atomic_flags);
+}
+
+__device__ glm::vec3 TemperatureColor(float t) {
+    t = glm::clamp(t, 0.0f, 1.0f);
+    glm::vec3 c = glm::vec3(0.0);
+    if (t < 0.25f) { // Blue -> Cyan
+        c = glm::mix(glm::vec3(0, 0, 1), glm::vec3(0, 1, 1), t * 4.0f);
+    }
+    else if (t < 0.5f) { // Cyan -> Green
+        c = glm::mix(glm::vec3(0, 1, 1), glm::vec3(0, 1, 0), (t - 0.25f) * 4.0f);
+    }
+    else if (t < 0.75f) { // Green -> Yellow
+        c = glm::mix(glm::vec3(0, 1, 0), glm::vec3(1, 1, 0), (t - 0.5f) * 4.0f);
+    }
+    else { // Yellow -> Red
+        c = glm::mix(glm::vec3(1, 1, 0), glm::vec3(1, 0, 0), (t - 0.75f) * 4.0f);
+    }
+    return c;
+}
+
+__global__ void VisualizeLBVHKernel(
+    glm::vec3* output_buffer,
+    int width, int height,
+    Camera cam, // 注意：Camera 直接传值，方便 Kernel 内访问
+    LBVHData d_bvh_data,
+    int num_triangles)
+{
+    int x = (blockIdx.x * blockDim.x) + threadIdx.x;
+    int y = (blockIdx.y * blockDim.y) + threadIdx.y;
+    int index = x + (y * width);
+
+    if (x >= width || y >= height) return;
+
+    // 1. 生成光线 (简化版 PinHole，不带 Jitter)
+    // 假设 cam.view, cam.right, cam.up 是单位向量
+    glm::vec3 dir = glm::normalize(cam.view
+        + cam.right * cam.pixelLength.x * ((float)x - (float)width * 0.5f)
+        - cam.up * cam.pixelLength.y * ((float)y - (float)height * 0.5f)
+    );
+
+    Ray ray;
+    ray.origin = cam.position;
+    ray.direction = dir;
+    glm::vec3 inv_dir = 1.0f / dir; // 预计算倒数，加速 AABB 测试
+
+    // 2. 遍历 BVH 并计数
+    int steps = 0;
+    int stack[64];
+    int stack_ptr = 0;
+    int node_idx = 0; // Root
+
+    // 检查 Root AABB
+    float t_root = BoudingboxIntersetionTest(
+        MakeVec3(d_bvh_data.aabb_min[0]),
+        MakeVec3(d_bvh_data.aabb_max[0]), ray, inv_dir);
+
+    if (t_root == -1.0f) node_idx = -1;
+
+    // 最大显示步数（超过这个数变红，可调节）
+    const float MAX_STEPS = 300.0f;
+
+    while (node_idx != -1 || stack_ptr > 0)
+    {
+        if (node_idx == -1) node_idx = stack[--stack_ptr];
+
+        steps++; // 增加开销计数
+
+        if (node_idx >= num_triangles) // 叶子节点
+        {
+            node_idx = -1; // 不深入三角形，只看 AABB 结构
+        }
+        else // 内部节点
+        {
+            int2 children = d_bvh_data.child_nodes[node_idx];
+            int left = DecodeNode(children.x);
+            int right = DecodeNode(children.y);
+
+            float t_l = BoudingboxIntersetionTest(
+                MakeVec3(d_bvh_data.aabb_min[left]),
+                MakeVec3(d_bvh_data.aabb_max[left]), ray, inv_dir);
+            float t_r = BoudingboxIntersetionTest(
+                MakeVec3(d_bvh_data.aabb_min[right]),
+                MakeVec3(d_bvh_data.aabb_max[right]), ray, inv_dir);
+
+            bool hit_l = (t_l != -1.0f);
+            bool hit_r = (t_r != -1.0f);
+
+            if (hit_l && hit_r) {
+                // 按距离排序入栈：先访问近的
+                int first = (t_l < t_r) ? left : right;
+                int second = (t_l < t_r) ? right : left;
+                stack[stack_ptr++] = second;
+                node_idx = first;
+            }
+            else if (hit_l) node_idx = left;
+            else if (hit_r) node_idx = right;
+            else node_idx = -1;
+        }
+
+        if (stack_ptr >= 64) break; // 栈溢出保护
+    }
+
+    // 3. 输出颜色到 Final Image Buffer
+    output_buffer[index] = TemperatureColor((float)steps / MAX_STEPS);
+}
+
+void VisualizeLBVH(
+    glm::vec3* output_buffer,
+    int width, int height,
+    const Camera& cam,
+    const LBVHData& d_bvh_data,
+    int num_triangles)
+{
+    const dim3 blockSize(16, 16);
+    const dim3 blocksPerGrid(
+        (width + blockSize.x - 1) / blockSize.x,
+        (height + blockSize.y - 1) / blockSize.y);
+
+    VisualizeLBVHKernel << <blocksPerGrid, blockSize >> > (
+        output_buffer,
+        width, height,
+        cam,
+        d_bvh_data,
+        num_triangles
+        );
 }

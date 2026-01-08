@@ -22,9 +22,9 @@
 #include "logic.h"
 #include "ray_gen.h"
 #include "optix/optix_ray_cast.h"
-#include "svgf.h" // [Include SVGF]
+#include "svgf.h" 
 
-#define USE_OPTIX 
+//#define USE_OPTIX 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #if CUDA_ENABLE_ERROR_CHECK
 #define CHECK_CUDA_ERROR(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -71,7 +71,10 @@ namespace pathtrace_wavefront
                 color_vec = final_image[index];
             }
             else {
-                color_vec = (direct_lighting[index] + indirect_lighting[index]) / (float)iter;
+                if (iter > 0)
+                    color_vec = (direct_lighting[index] + indirect_lighting[index]) / (float)iter;
+                else 
+                    color_vec = final_image[index]; // bvh可视化
             }
             // Gamma 映射
             color_vec = glm::pow(color_vec, glm::vec3(1.0f / 2.2f));
@@ -238,6 +241,32 @@ namespace pathtrace_wavefront
             CHECK_CUDA_ERROR("InitPathPoolKernel");
         }
 
+        if (hst_gui_data && hst_gui_data->ShowBVH)
+        {
+            // 1. 调用 BVH 模块的可视化函数 (在 bvh.cu 中实现)
+            // 结果写入 pState->d_final_image
+            VisualizeLBVH(
+                pState->d_final_image,
+                cam.resolution.x, cam.resolution.y,
+                cam,
+                pState->d_bvh_data,
+                pState->d_mesh_data.num_triangles
+            );
+
+            SendImageToPBOKernel << <blocks_per_grid_2d, block_size_2d >> > (
+                pbo,
+                cam.resolution,
+                -1, // Special flag to just read final_image directly
+                0,  // Mode 0: Color
+                false, // No denoiser
+                pState->d_final_image,
+                nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+                );
+
+            // 直接返回，不执行复杂的路径追踪逻辑
+            return;
+        }
+
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
         cudaEventCreate(&stop);
@@ -355,6 +384,8 @@ namespace pathtrace_wavefront
 
         if (g_enableVisualization)
         {
+
+
             cudaDeviceSynchronize();
             int mode = (hst_gui_data) ? hst_gui_data->SelectedDisplayMode : 0;
 
