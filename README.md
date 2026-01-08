@@ -51,7 +51,8 @@ In this scenario, the shading kernels are relatively lightweight. The Wavefront 
 **Conclusion:** For lightweight shaders, the **12x** increase in global memory traffic outweighs the benefits of improved occupancy. The GPU is effectively "waiting for data" rather than computing.
 
 <details>
-<summary><strong> Click to expand: Deep Dive into Bottlenecks</strong></summary>
+<summary><strong> ⚡Click to expand: Deep Dive into Bottlenecks</strong></summary>
+
 
 #### 1. Compute vs. Memory Analysis
 
