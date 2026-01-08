@@ -10,10 +10,6 @@ High-performance C++/CUDA Path Tracer featuring Wavefront architecture, GPU-para
 
 ![Sponza](img/Sponza.png)
 
-| <img src="img\bunny_reflection.png" alt="bunny_reflection" style="zoom:40%;" /> | <img src="img\bunny_refraction.png" alt="bunny_refraction" style="zoom:40%;" /> | <img src="img\bunny_pbr.png" alt="bunny_pbr" style="zoom:40%;" /> |
-| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| **Specular Reflection**                                      | **Specular Refraction**                                      | **Microfacet PBR**                                           |
-
 # 2. Features
 
 - **Wavefront Architecture:**  Decouples the rendering pipeline into independent Logic, Shading, and RayCast stages, utilizing multi-level task queues for efficient management.
@@ -121,13 +117,59 @@ Experiment was conducted on **RTX 3060 laptop** using the Wavefront architecture
 
 The integration yields a significant **8.19x speedup** in ray traversal throughput. In general, this performance leap is driven by two factors: First, the OptiX constructs highly optimized and efficient BVH structures. Second, the RT Cores leverage dedicated hardware circuits to execute ray-triangle intersection tests significantly faster than software Moller-Trumbore algorithm.
 
-## 3.3 SVGF
+## 3.3 Physically Based Materials
+
+<p align="center">   <img src="img/material.jpg" width="60%" /> </p>
+
+This system supports **Lambertian diffuse** for matte surfaces and utilizes a **Microfacet PBR** model to simulate realistic rough and metallic materials. Additionally, the system implements **Dielectric** materials, which accurately calculate light transport through transparent media by integrating both specular reflection and refraction.
+
+## 3.4 MIS
+
+| <img src="img/brdf sampling.png"/> | <img src="img/light sampling.png"/> |
+| ---------------------------------- | ----------------------------------- |
+
+<p align="center">   <img src="img/mis.png" width="60%" /> </p>
+
+This renderer implements **Multiple Importance Sampling (MIS)** by combining the strengths of BSDF sampling and Direct Light sampling.
+
+**BRDF Sampling (Top-Left)**: This method struggles significantly with **small light sources** because the probability of a random ray hitting a small light is extremely low. However, it handles the reflection of the large light source well.
+
+**Direct Light Sampling(Top-Right)**: Rays are explicitly connected to points on the light sources. While this perfectly resolves the small lights, it fails to efficiently sample the **glossy and specular reflection of the large light source**.
+
+**MIS (Bottom)**: By using the **Power Heuristic** to weight and combine both sampling strategies, MIS automatically favors the technique that performs best for a given interaction. 
+
+## 3.5 SVGF
 
 <img src="img/svgf comparation.png"/>
 
-SVGF filter takes (left) 1 sample per pixel path-traced input and reconstructs (center) a 1920x1080 clean image in just **11.2 ms**. Compare to (right) a 500 samples per pixel reference.
+SVGF filter takes (left) 1 sample per pixel path-traced input and reconstructs (center) a 1920x1080 clean image in just **8.26 ms**. Compare to (right) a 500 samples per pixel reference.
 
-## 3.4 AoS vs. SoA Memory Layout
+<p align="center">   <img src="img/svgf_performance.png" width="85%" /> </p>
 
-🚧 **Work In Progress**.... 🚧
+The **À-trous Wavelet Transform** is the most expensive stage, accounting for ~60% of the total filtering time.
+
+**Variance Estimation** is the primary source of performance variability in the pipeline. Under normal conditions, temporal reprojection efficiently reuses history variance data.
+
+However, when disocclusions occur or temporal history is invalid (e.g., rapid camera movement or at geometry edges), the algorithm falls back to a spatial **Cross-bilateral Filter**. The profiling indicates the execution time for this stage spikes to **3.06 ms** (up from the baseline ~1.17 ms). Consequently, total frame time may increase slightly during dynamic scene
+
+# 4. References
+
+**Code**
+
+- [*tinyobjloader*](https://github.com/tinyobjloader/tinyobjloader)
+
+**Assets**
+
+- [*Fireplace Room*](https://casual-effects.com/data/)
+- [*Crytek Sponza*](https://www.cryengine.com/marketplace/product/crytek/sponza-sample-scene)
+- [*Rungholt*](https://casual-effects.com/data/)
+- [*Stanford Bunny*](http://graphics.stanford.edu/data/3Dscanrep/)
+
+**Papers**
+
+- Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction for Path-Traced Global Illumination
+- Megakernels Considered Harmful: Wavefront Path Tracing on GPUs
+- Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees
+
+
 
